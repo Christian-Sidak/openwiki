@@ -43,6 +43,15 @@ describe("ensureCodeModeRepoSetup agent files", () => {
       expect(content).toContain(SNIPPET_START);
       expect(content).toContain(SNIPPET_END);
       expect(content).toContain("## OpenWiki");
+      expect(content).toContain("just-in-time repository index");
+      expect(content).toContain("Before a repository-wide");
+      expect(content).toContain("Re-consult the wiki");
+      expect(content).toContain("import path consumers actually use");
+      expect(content).toContain("internal unit tests alone");
+      expect(content).toContain("symbol_trace");
+      expect(content).toContain("independent instances");
+      expect(content).toContain("deferred or re-entrant mutation");
+      expect(content).toContain("test_search");
     }
   });
 

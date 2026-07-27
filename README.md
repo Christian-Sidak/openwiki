@@ -171,7 +171,7 @@ Bare `openwiki` runs in code mode for the current repository. It creates initial
 
 Bare `openwiki --init` and `openwiki --update` default to code mode and operate on repository documentation. Use the `personal` positional mode or `--mode personal` to initialize or update the local personal brain wiki.
 
-On each `code` run, `openwiki` maintains both an `AGENTS.md` and a `CLAUDE.md` at the repository root, adding prompting that instructs your coding agent to reference the wiki when searching for context. Each file is created if it does not already exist. If a file is present, OpenWiki only rewrites its own `<!-- OPENWIKI:START -->…<!-- OPENWIKI:END -->` block and leaves the rest of your content untouched (appending the block the first time). The scheduled GitHub Actions workflow includes these files, along with the workflow itself, in the documentation pull request.
+On each `code` run, `openwiki` maintains both an `AGENTS.md` and a `CLAUDE.md` at the repository root, adding a just-in-time navigation workflow: start from the quickstart, search only relevant wiki pages, consult source maps before broad repository searches, and return to the wiki at subsystem or debugging boundaries. Source code and tests remain authoritative. Each file is created if it does not already exist. If a file is present, OpenWiki only rewrites its own `<!-- OPENWIKI:START -->…<!-- OPENWIKI:END -->` block and leaves the rest of your content untouched (appending the block the first time). The scheduled GitHub Actions workflow includes these files, along with the workflow itself, in the documentation pull request.
 
 Repository-specific wiki instructions are stored separately in
 `openwiki/INSTRUCTIONS.md`. This file is a shared, user-authored brief for the
