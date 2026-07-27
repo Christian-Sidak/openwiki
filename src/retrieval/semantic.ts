@@ -1,5 +1,5 @@
 import { rankBm25, rankLocalVectors, searchableText } from "./ranking.js";
-import type { IndexedChunk, RankedHit, SearchScope } from "./types.js";
+import type { IndexedChunk, RankedHit } from "./types.js";
 
 export type EmbeddingProvider = "local" | "openai";
 
@@ -13,19 +13,15 @@ export class SemanticRanker {
   async rank(
     chunks: IndexedChunk[],
     query: string,
-    scope: SearchScope,
   ): Promise<{ engine: string; hits: RankedHit[] }> {
-    const scoped = chunks.filter(
-      (chunk) => scope === "all" || chunk.scope === scope,
-    );
     if (this.provider !== "openai" || !process.env.OPENAI_API_KEY) {
       return {
         engine: "local-hashed-vector",
-        hits: rankLocalVectors(scoped, query),
+        hits: rankLocalVectors(chunks, query),
       };
     }
     try {
-      const candidates = selectOpenAiCandidates(scoped, query);
+      const candidates = selectOpenAiCandidates(chunks, query);
       const embeddings = await this.openAiEmbeddings();
       const queryVector = await embeddings.embedQuery(query);
       const missing = candidates.filter(
@@ -51,7 +47,7 @@ export class SemanticRanker {
     } catch {
       return {
         engine: "local-hashed-vector:fallback",
-        hits: rankLocalVectors(scoped, query),
+        hits: rankLocalVectors(chunks, query),
       };
     }
   }

@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
+import warnings
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ DEFAULT_ALLOWED_HOSTS = (
 SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
 TASK_FILTER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+*?\[\]-]*$")
 DNS_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+DOCKER_NETWORK_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 EVAL_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EVAL_DIR.parents[1]
@@ -49,6 +51,35 @@ DEFAULT_DEEPSWE_DIR = EVAL_DIR / ".cache" / "deep-swe"
 DEFAULT_ARTIFACTS_DIR = EVAL_DIR / "artifacts"
 DEFAULT_JOBS_DIR = EVAL_DIR / "results"
 DEFAULT_SUMMARY_DIR = EVAL_DIR / "summaries"
+
+KOOTA_5_TASKS = (
+    "koota-composite-trait-aspects",
+    "koota-deferred-mutation-buffer",
+    "koota-entity-snapshot-rollback",
+    "koota-pair-relation-tracking",
+    "koota-query-predicates",
+)
+WIKI_STRESS_15_TASKS = (
+    "adaptix-name-mapping-aliases",
+    "dynamodb-toolbox-lazy-recursive-schemas",
+    "pebble-durability-wait-apis",
+    "scriggo-method-declarations",
+    "helm-unified-manifest-stream",
+    "fastapi-implicit-head-options",
+    "boa-hierarchical-evaluation-cancellation",
+    "bandit-structured-nosec-directives",
+    "effect-sse-httpapi-streaming",
+    "katex-multicolumn-array-spans",
+    "prometheus-transactional-reload-status",
+    "opa-template-string-reconstruction",
+    "oxvg-structural-selector-preservation",
+    "kgateway-consistent-hash-policy",
+    "python-statemachine-state-data-scoping",
+)
+TASK_SUITES = {
+    "koota-5": KOOTA_5_TASKS,
+    "openwiki-20": (*KOOTA_5_TASKS, *WIKI_STRESS_15_TASKS),
+}
 
 SENSITIVE_FLAGS = {"--agent-env", "--ae"}
 LANGSMITH_ENV_UNSET = {
@@ -144,6 +175,174 @@ def run_checked(
     subprocess.run(list(argv), cwd=cwd, env=env, check=True, shell=False)
 
 
+def harbor_job_name(args: argparse.Namespace, condition: str) -> str:
+    return f"{args.run_name}-{condition}-seed-{args.seed}"
+
+
+def _trial_network_identity(
+    trial_dir: Path, *, job_dir: Path
+) -> tuple[str, str] | None:
+    """Return the expected Compose project and network for one direct trial child."""
+
+    try:
+        resolved_job = job_dir.resolve(strict=True)
+        resolved_trial = trial_dir.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved_trial.is_dir() or resolved_trial.parent != resolved_job:
+        return None
+
+    project_name = f"{resolved_trial.name.lower()}__env"
+    network_name = f"{project_name}_default"
+    if not DOCKER_NETWORK_RE.fullmatch(network_name):
+        return None
+    return project_name, network_name
+
+
+def _cleanup_docker_networks(
+    trials: Iterable[tuple[Path, Path]],
+) -> None:
+    """Best-effort removal of inactive, label-verified Harbor trial networks."""
+
+    candidates: dict[str, str] = {}
+    for job_dir, trial_dir in trials:
+        identity = _trial_network_identity(trial_dir, job_dir=job_dir)
+        if identity is not None:
+            project_name, network_name = identity
+            candidates[network_name] = project_name
+    if not candidates:
+        return
+
+    try:
+        listing = subprocess.run(
+            ["docker", "network", "ls", "--format", "{{.Name}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            shell=False,
+        )
+    except OSError:
+        warnings.warn(
+            "Could not list Docker networks for Harbor cleanup; continuing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    if listing.returncode != 0:
+        warnings.warn(
+            "Could not list Docker networks for Harbor cleanup; continuing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+
+    available = set(listing.stdout.splitlines())
+    for network_name, project_name in sorted(candidates.items()):
+        if network_name not in available:
+            continue
+        try:
+            inspected = subprocess.run(
+                ["docker", "network", "inspect", network_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+            if inspected.returncode != 0:
+                continue
+            payload = json.loads(inspected.stdout)
+            if not isinstance(payload, list) or len(payload) != 1:
+                continue
+            network = payload[0]
+            if not isinstance(network, dict):
+                continue
+            labels = network.get("Labels")
+            containers = network.get("Containers")
+            if (
+                network.get("Name") != network_name
+                or not isinstance(labels, dict)
+                or labels.get("com.docker.compose.project") != project_name
+                or labels.get("com.docker.compose.network") != "default"
+                or not isinstance(containers, dict)
+                or containers
+            ):
+                continue
+            removed = subprocess.run(
+                ["docker", "network", "rm", network_name],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=False,
+            )
+            if removed.returncode != 0:
+                warnings.warn(
+                    f"Could not remove inactive Harbor network {network_name!r}; "
+                    "continuing",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        except (OSError, json.JSONDecodeError, TypeError):
+            warnings.warn(
+                f"Could not verify Harbor network {network_name!r}; continuing",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+
+def cleanup_stale_docker_networks(jobs_dir: Path) -> None:
+    """Clean inactive networks from completed Harbor trials under jobs_dir."""
+
+    trials: list[tuple[Path, Path]] = []
+    try:
+        if not jobs_dir.is_dir():
+            return
+        resolved_jobs = jobs_dir.resolve(strict=True)
+        for candidate in jobs_dir.iterdir():
+            job_dir = candidate.resolve(strict=True)
+            if job_dir.parent != resolved_jobs:
+                continue
+            if not job_dir.is_dir() or not (job_dir / "config.json").is_file():
+                continue
+            for trial_dir in job_dir.iterdir():
+                if trial_dir.is_dir() and (trial_dir / "result.json").is_file():
+                    trials.append((job_dir, trial_dir))
+    except OSError:
+        warnings.warn(
+            "Could not inspect Harbor results for Docker cleanup; continuing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    _cleanup_docker_networks(trials)
+
+
+def cleanup_job_docker_networks(jobs_dir: Path, job_name: str) -> None:
+    """Clean inactive networks belonging to the exact current Harbor job."""
+
+    validate_id(job_name, "job name")
+    try:
+        resolved_jobs = jobs_dir.resolve(strict=True)
+        job_dir = (jobs_dir / job_name).resolve(strict=True)
+    except OSError:
+        return
+    if not job_dir.is_dir() or job_dir.parent != resolved_jobs:
+        return
+    try:
+        trials = [
+            (job_dir, trial_dir)
+            for trial_dir in job_dir.iterdir()
+            if trial_dir.is_dir()
+        ]
+    except OSError:
+        warnings.warn(
+            "Could not inspect the current Harbor job for Docker cleanup; continuing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    _cleanup_docker_networks(trials)
+
+
 def prepare_deepswe(destination: Path, *, dry_run: bool) -> None:
     if not destination.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -218,7 +417,7 @@ def harbor_args(
     for task in args.task:
         validate_task_filter(task)
 
-    job_name = f"{args.run_name}-{condition}-seed-{args.seed}"
+    job_name = harbor_job_name(args, condition)
     command = [
         "uvx",
         "--python",
@@ -329,8 +528,13 @@ def select_tasks(args: argparse.Namespace) -> list[str] | None:
     """Select an exact, reproducible Harbor task set from the pinned checkout."""
 
     tasks_dir = args.deepswe_dir / "tasks"
+    suite_tasks: list[str] | None = None
+    if args.task_suite:
+        suite_tasks = list(TASK_SUITES[args.task_suite])
+        for task_id in suite_tasks:
+            validate_task_filter(task_id)
     if not tasks_dir.is_dir():
-        return None
+        return suite_tasks
     candidates: list[tuple[str, str]] = []
     for config_path in sorted(tasks_dir.glob("*/task.toml")):
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -339,6 +543,15 @@ def select_tasks(args: argparse.Namespace) -> list[str] | None:
         validate_task_filter(local_id)
         if isinstance(configured_name, str):
             candidates.append((local_id, configured_name))
+    if suite_tasks is not None:
+        available = {local_id for local_id, _ in candidates}
+        missing = [task_id for task_id in suite_tasks if task_id not in available]
+        if missing:
+            raise ValueError(
+                f"DeepSWE task suite {args.task_suite!r} is missing pinned tasks: "
+                f"{', '.join(missing)}"
+            )
+        return suite_tasks
     if args.task:
         candidates = [
             candidate
@@ -372,12 +585,34 @@ def run_condition(
         package_path=package_path,
         selected_tasks=select_tasks(args),
     )
-    run_checked(
-        command,
-        dry_run=args.dry_run,
-        env_overrides=langsmith_env(args),
-        env_unset=LANGSMITH_ENV_UNSET,
-    )
+    clean_docker = args.environment == "docker" and not args.dry_run
+    job_name = harbor_job_name(args, condition)
+    if clean_docker:
+        try:
+            cleanup_stale_docker_networks(args.jobs_dir)
+        except Exception:
+            warnings.warn(
+                "Docker network preflight cleanup failed; continuing",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    try:
+        run_checked(
+            command,
+            dry_run=args.dry_run,
+            env_overrides=langsmith_env(args),
+            env_unset=LANGSMITH_ENV_UNSET,
+        )
+    finally:
+        if clean_docker:
+            try:
+                cleanup_job_docker_networks(args.jobs_dir, job_name)
+            except Exception:
+                warnings.warn(
+                    "Docker network final cleanup failed; continuing",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
 
 def seconds_between(timing: dict[str, Any] | None) -> float | None:
@@ -529,6 +764,11 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--environment", choices=("docker", "modal"), default="docker")
     parser.add_argument("--n-tasks", type=int, default=10)
     parser.add_argument("--task", action="append", default=[])
+    parser.add_argument(
+        "--task-suite",
+        choices=tuple(TASK_SUITES),
+        help="Exact named task set; selects all members regardless of --n-tasks",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -561,6 +801,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.n_tasks <= 0 or args.attempts <= 0 or args.concurrency <= 0:
         parser.error("--n-tasks, --attempts, and --concurrency must be positive")
+    if args.task_suite and args.task:
+        parser.error("--task-suite cannot be combined with --task")
     return args
 
 

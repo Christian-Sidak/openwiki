@@ -48,10 +48,14 @@ describe("ensureCodeModeRepoSetup agent files", () => {
       expect(content).toContain("Re-consult the wiki");
       expect(content).toContain("import path consumers actually use");
       expect(content).toContain("internal unit tests alone");
-      expect(content).toContain("symbol_trace");
+      expect(content).toContain("trace_symbols");
+      expect(content).toContain("every identity axis");
+      expect(content).toContain("canonical owner or ledger");
+      expect(content).toContain("input/event/expected-result oracle row");
       expect(content).toContain("independent instances");
-      expect(content).toContain("deferred or re-entrant mutation");
-      expect(content).toContain("test_search");
+      expect(content).toContain("deferred or re-entrant net effects");
+      expect(content).toContain("\`tests\` scope");
+      expect(content).toContain("quiet validation");
     }
   });
 

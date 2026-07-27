@@ -44,6 +44,15 @@ const SYNONYM_GROUPS = [
   ["relation", "edge", "link", "pair", "target"],
   ["aspect", "composite", "trait", "mixin", "schema"],
   ["diff", "restore", "rollback", "snapshot", "state"],
+  ["initial", "baseline", "empty", "first", "setup"],
+  ["add", "added", "enter", "gain", "insert", "true"],
+  ["remove", "removed", "exit", "lose", "delete", "false"],
+  ["change", "changed", "mutate", "transition", "update"],
+  ["unchanged", "noop", "idempotent", "stable"],
+  ["independent", "isolation", "instance", "tracker"],
+  ["reset", "reuse", "window", "observation", "generation"],
+  ["defer", "reentrant", "coalesce", "net", "flush"],
+  ["compose", "composition", "combine", "mixed"],
 ] as const;
 
 const SYNONYMS = buildSynonyms();
@@ -80,6 +89,10 @@ export function rankKeyword(
       const title = `${chunk.title ?? ""} ${chunk.heading ?? ""}`.toLowerCase();
       const metadata = chunk.fields.toLowerCase();
       const text = chunk.text.toLowerCase();
+      const pathTerms = new Set(tokenize(path));
+      const titleTerms = new Set(tokenize(title));
+      const metadataTerms = new Set(tokenize(metadata));
+      const textTerms = new Set(tokenize(text));
       let score = 0;
       if (phrase) {
         if (path.includes(phrase)) score += 10;
@@ -88,10 +101,10 @@ export function rankKeyword(
         if (text.includes(phrase)) score += 5;
       }
       for (const term of queryTerms) {
-        if (path.includes(term)) score += 3.5;
-        if (title.includes(term)) score += 3;
-        if (metadata.includes(term)) score += 2;
-        if (text.includes(term)) score += 1;
+        if (path.includes(term) || pathTerms.has(term)) score += 3.5;
+        if (title.includes(term) || titleTerms.has(term)) score += 3;
+        if (metadata.includes(term) || metadataTerms.has(term)) score += 2;
+        if (text.includes(term) || textTerms.has(term)) score += 1;
       }
       return { chunk, score };
     })

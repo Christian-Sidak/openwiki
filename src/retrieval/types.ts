@@ -1,4 +1,6 @@
-export type SearchScope = "all" | "source" | "wiki";
+export type SearchScope = "all" | "source_code" | "tests" | "wiki";
+
+export type IndexedScope = "source_code" | "wiki";
 
 export type ChunkKind = "source" | "wiki-section";
 
@@ -11,8 +13,9 @@ export interface IndexedChunk {
   lineEnd: number;
   lineStart: number;
   path: string;
-  scope: Exclude<SearchScope, "all">;
+  scope: IndexedScope;
   tags: string[];
+  testNames?: string[];
   text: string;
   title?: string;
   type?: string;
@@ -50,21 +53,20 @@ export interface SearchResultItem {
   lineEnd: number;
   lineStart: number;
   path: string;
-  score: number;
-  signals?: Record<string, number>;
   snippet: string;
   tags?: string[];
+  testNames?: string[];
   title?: string;
   type?: string;
 }
 
 export interface SearchResponse {
-  engine: string;
   query: string;
   results: SearchResultItem[];
+  scope: SearchScope;
 }
 
-export type ChangeSurfaceCategory =
+export type SymbolTraceCategory =
   | "consumer"
   | "exports"
   | "implementation"
@@ -72,14 +74,22 @@ export type ChangeSurfaceCategory =
   | "publish_generated"
   | "tests";
 
+export type ChangeSurfaceCategory =
+  | SymbolTraceCategory
+  | "state_transitions";
+
 export interface ChangeSurfaceResponse {
   groups: Record<ChangeSurfaceCategory, SearchResultItem[]>;
   query: string;
   relatedConcepts: SearchResultItem[];
 }
 
-export interface SymbolTraceResponse {
-  groups: Record<ChangeSurfaceCategory, SearchResultItem[]>;
-  missing: ChangeSurfaceCategory[];
+export interface SymbolTraceResult {
+  groups: Record<SymbolTraceCategory, SearchResultItem[]>;
+  missing: SymbolTraceCategory[];
   symbol: string;
+}
+
+export interface SymbolTraceResponse {
+  traces: SymbolTraceResult[];
 }

@@ -2,6 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+  RETRIEVAL_TOOL_DEFINITIONS,
+  SEARCH_SCOPES,
+} from "../src/retrieval/mcp-tools.ts";
 import { RetrievalService } from "../src/retrieval/search-service.ts";
 
 let root = "";
@@ -14,6 +18,8 @@ beforeEach(async () => {
   wikiRoot = path.join(root, "wiki");
   await Promise.all([
     mkdir(path.join(repoRoot, "packages/core/src/query"), { recursive: true }),
+    mkdir(path.join(repoRoot, "packages/core/src/relation"), { recursive: true }),
+    mkdir(path.join(repoRoot, "packages/core/tests"), { recursive: true }),
     mkdir(path.join(repoRoot, "packages/publish/src"), { recursive: true }),
     mkdir(path.join(repoRoot, "packages/publish/tests"), { recursive: true }),
     mkdir(path.join(repoRoot, "secrets"), { recursive: true }),
@@ -55,7 +61,11 @@ The [quickstart](../quickstart.md) routes adjacent changes here.
     ),
     writeFile(
       path.join(repoRoot, "packages/core/src/query/predicate.ts"),
-      "export function createPredicate() { return true; }\n",
+      "export const PUBLIC_PREDICATE_FACTORY = true;\nexport function createPredicate() { return true; }\n",
+    ),
+    writeFile(
+      path.join(repoRoot, "packages/core/src/relation/relation-events.ts"),
+      "export function removeRelationPair() { emitRelationEvent('remove'); }\nfunction emitRelationEvent(type: string) { return type; }\n",
     ),
     writeFile(
       path.join(repoRoot, "packages/core/src/index.ts"),
@@ -66,8 +76,12 @@ The [quickstart](../quickstart.md) routes adjacent changes here.
       "export { createPredicate } from '@koota/core';\n",
     ),
     writeFile(
+      path.join(repoRoot, "packages/core/tests/predicate.test.ts"),
+      "import { createPredicate } from '../src';\ndescribe('predicate lifecycle', () => {\n  test('tracks false-to-true transitions independently', () => createPredicate());\n});\n",
+    ),
+    writeFile(
       path.join(repoRoot, "packages/publish/tests/predicate.test.ts"),
-      "import { createPredicate } from 'koota';\ntest('public import', () => createPredicate());\n",
+      "import { createPredicate } from 'koota';\ndescribe('predicate lifecycle', () => {\n  test('tracks false-to-true transitions independently', () => createPredicate());\n});\n",
     ),
     writeFile(
       path.join(repoRoot, ".env"),
@@ -93,127 +107,156 @@ function service(): RetrievalService {
 }
 
 describe("OKF-aware repository retrieval", () => {
-  test("supports keyword, BM25, and local vector ranking", async () => {
+  test("exposes three concise workflow-oriented MCP tools", () => {
+    expect(RETRIEVAL_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
+      "search",
+      "change_surface",
+      "trace_symbols",
+    ]);
+    expect(
+      RETRIEVAL_TOOL_DEFINITIONS.every(
+        (tool) =>
+          tool.description.length >= 100 && tool.description.length < 300,
+      ),
+    ).toBe(true);
+    expect(SEARCH_SCOPES).toEqual(["all", "wiki", "source_code", "tests"]);
+  });
+
+  test("automatically combines lexical, semantic, and OKF ranking", async () => {
     const retrieval = service();
-    const keyword = await retrieval.keywordSearch("createPredicate", "all", 5);
-    const bm25 = await retrieval.bm25Search(
-      "predicate consumer import",
-      "all",
-      5,
-    );
-    const semantic = await retrieval.semanticSearch(
+    const exact = await retrieval.search("createPredicate", "source_code", 5);
+    const concept = await retrieval.search("query navigation", "wiki", 5);
+    const consumer = await retrieval.search(
       "consumer-facing package surface",
       "all",
       5,
     );
 
-    expect(keyword.results[0]?.path).toMatch(/predicate|index/u);
-    expect(bm25.results.some((hit) => hit.path.includes("publish/tests"))).toBe(
-      true,
+    expect(exact.results[0]?.path).toMatch(/predicate|index/u);
+    expect(concept.results.map((hit) => hit.path)).toContain(
+      "openwiki/architecture/runtime.md",
     );
-    expect(semantic.engine).toBe("local-hashed-vector");
     expect(
-      semantic.results.some(
+      consumer.results.some(
         (hit) =>
           hit.path.includes("runtime.md") || hit.path.includes("publish"),
       ),
     ).toBe(true);
   });
 
-  test("expands retrieval through OKF links and shared tags", async () => {
-    const graph = await service().okfGraphSearch("query navigation", 5, 2);
-
-    expect(graph.results.map((hit) => hit.path)).toContain(
-      "openwiki/architecture/runtime.md",
-    );
-    expect(graph.results.map((hit) => hit.path)).toContain(
-      "openwiki/quickstart.md",
-    );
-  });
-
-  test("hybrid search reports component scores", async () => {
-    const hybrid = await service().hybridSearch(
-      "add predicate query public API",
-      "all",
-      5,
+  test("supports distinct wiki, source_code, and tests scopes", async () => {
+    const retrieval = service();
+    const source = await retrieval.search("createPredicate", "source_code", 10);
+    const tests = await retrieval.search(
+      "false-to-true independent predicate transition",
+      "tests",
+      10,
     );
 
-    expect(hybrid.engine).toContain("hybrid-rrf");
-    expect(hybrid.results[0]?.signals).toBeDefined();
-  });
-
-  test("test_search returns only bounded test citations", async () => {
-    const result = await service().testSearch(
-      "public predicate import lifecycle transition",
-      3,
+    expect(source.results.every((hit) => !/test|spec/iu.test(hit.path))).toBe(
+      true,
     );
-
-    expect(result.engine).toContain("test-hybrid-rrf");
-    expect(result.results.length).toBeLessThanOrEqual(3);
-    expect(result.results.length).toBeGreaterThan(0);
+    expect(tests.scope).toBe("tests");
+    expect(tests.results.length).toBeGreaterThan(0);
+    expect(tests.results.every((hit) => /test|spec/iu.test(hit.path))).toBe(
+      true,
+    );
+    expect(tests.results.flatMap((hit) => hit.testNames ?? [])).toContain(
+      "tracks false-to-true transitions independently",
+    );
     expect(
-      result.results.every((hit) => /(?:test|spec)/iu.test(hit.path)),
-    ).toBe(true);
+      tests.results.filter((hit) => hit.path.endsWith("predicate.test.ts")),
+    ).toHaveLength(1);
+    expect(tests.results[0]).not.toHaveProperty("signals");
+    expect(tests.results[0]).not.toHaveProperty("score");
+  });
+
+  test("clamps broad result requests to the public maximum", async () => {
+    const result = await service().search(
+      "predicate query public API",
+      "all",
+      50,
+    );
+
+    expect(result.results.length).toBeLessThanOrEqual(10);
   });
 
   test("change_surface groups cross-package evidence", async () => {
     const surface = await service().changeSurface(
-      "add createPredicate query API",
-      6,
+      "add createPredicate query API and track relation removal events",
+      7,
     );
 
     expect(surface.relatedConcepts[0]?.path).toContain("openwiki/");
     expect(surface.groups.implementation.length).toBeGreaterThan(0);
+    expect(surface.groups.state_transitions[0]?.path).toContain("relation");
     expect(surface.groups.exports.length).toBeGreaterThan(0);
     expect(surface.groups.publish_generated.length).toBeGreaterThan(0);
     expect(surface.groups.consumer.length).toBeGreaterThan(0);
     expect(surface.groups.tests.length).toBeGreaterThan(0);
     const results = Object.values(surface.groups).flat();
-    expect(results).toHaveLength(6);
-    expect(surface.relatedConcepts.length).toBeLessThanOrEqual(3);
+    expect(results).toHaveLength(7);
+    expect(surface.relatedConcepts.length).toBeLessThanOrEqual(2);
     expect(
       Math.max(...results.map((result) => result.snippet.length)),
-    ).toBeLessThanOrEqual(320);
-    expect(JSON.stringify(surface).length).toBeLessThan(6_000);
+    ).toBeLessThanOrEqual(220);
+    expect(JSON.stringify(surface).length).toBeLessThan(5_000);
   });
 
-  test("symbol_trace refreshes post-edit source and reports missing layers", async () => {
+  test("trace_symbols reindexes once and accepts batched dotted symbols", async () => {
     const retrieval = service();
-    await retrieval.keywordSearch("createMatcher", "source", 5);
+    await retrieval.search("createMatcher", "source_code", 5);
     await writeFile(
       path.join(repoRoot, "packages/core/src/query/matcher.ts"),
-      "export function createMatcher() { return true; }\n",
+      "export function createMatcher() { return true; }\nexport const Entity = { changed() { return true; } };\n",
     );
 
-    const trace = await retrieval.symbolTrace("createMatcher", 6);
+    const response = await retrieval.traceSymbols(
+      [
+        "createMatcher",
+        "Entity.changed",
+        "PUBLIC_PREDICATE_FACTORY",
+        "createMatcher",
+      ],
+      50,
+    );
+    const trace = response.traces[0];
 
     expect(trace.groups.implementation[0]?.path).toContain("matcher.ts");
     expect(trace.missing).toContain("consumer");
     expect(trace.missing).toContain("tests");
     expect(trace.missing).toContain("exports");
     expect(Object.values(trace.groups).flat()).toHaveLength(1);
+    expect(response.traces.map((item) => item.symbol)).toEqual([
+      "createMatcher",
+      "Entity.changed",
+      "PUBLIC_PREDICATE_FACTORY",
+    ]);
+    expect(response.traces[1]?.groups.implementation[0]?.path).toContain(
+      "matcher.ts",
+    );
+    expect(response.traces[2]?.groups.implementation[0]?.path).toContain(
+      "predicate.ts",
+    );
     await expect(
-      retrieval.symbolTrace("createMatcher(); rm -rf /", 6),
-    ).rejects.toThrow("single 1-100 character identifier");
+      retrieval.traceSymbols(["createMatcher(); rm -rf /"], 6),
+    ).rejects.toThrow("plain or dotted identifier");
   });
 
   test("never indexes secret-like files", async () => {
-    const result = await service().keywordSearch(
+    const result = await service().search(
       "never-index-this credentials",
       "all",
-      20,
+      50,
     );
 
     expect(result.results).toEqual([]);
   });
 
-  test("bounds query length and result limits", async () => {
+  test("bounds query length", async () => {
     const retrieval = service();
-    await expect(retrieval.keywordSearch("x", "all", 21)).rejects.toThrow(
-      "limit must be",
+    await expect(retrieval.search("x".repeat(501), "all", 5)).rejects.toThrow(
+      "query must be",
     );
-    await expect(
-      retrieval.keywordSearch("x".repeat(501), "all", 5),
-    ).rejects.toThrow("query must be");
   });
 });

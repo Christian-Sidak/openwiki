@@ -16,7 +16,10 @@ describe("repository coding-agent documentation guidance", () => {
     expect(prompt).toContain("consumer-facing smoke test");
     expect(prompt).toContain("behavioral test matrix");
     expect(prompt).toContain("isolation between independent instances");
-    expect(prompt).toContain("test_search");
+    expect(prompt).toContain("scoped to `tests`");
+    expect(prompt).toContain("observation-window boundaries");
+    expect(prompt).toContain("net/coalesced effects");
+    expect(prompt).toContain("narrow and quiet");
     expect(prompt).toContain("Label expensive checks as conditional");
     expect(prompt).toContain(
       "simulate navigation for representative adjacent changes",

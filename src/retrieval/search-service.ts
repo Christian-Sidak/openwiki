@@ -16,22 +16,37 @@ import type {
   SearchResponse,
   SearchResultItem,
   SearchScope,
+  SymbolTraceCategory,
+  SymbolTraceResult,
   SymbolTraceResponse,
 } from "./types.js";
 
-const DEFAULT_LIMIT = 8;
-const MAX_LIMIT = 20;
+const DEFAULT_LIMIT = 6;
+const MAX_SEARCH_LIMIT = 10;
+const MAX_SURFACE_LIMIT = 12;
+const MAX_TRACE_LIMIT = 6;
+const MAX_SYMBOLS = 12;
 const MAX_QUERY_LENGTH = 500;
-const MAX_RELATED_CONCEPTS = 3;
-const MAX_SNIPPET_LENGTH = 320;
-const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/u;
-const SURFACE_CATEGORY_ORDER: ChangeSurfaceCategory[] = [
-  "consumer",
-  "tests",
+const MAX_RELATED_CONCEPTS = 2;
+const MAX_SNIPPET_LENGTH = 220;
+const DOTTED_IDENTIFIER =
+  /^[A-Za-z_$][A-Za-z0-9_$]{0,99}(?:\.[A-Za-z_$][A-Za-z0-9_$]{0,99}){0,5}$/u;
+const TRACE_CATEGORY_ORDER: SymbolTraceCategory[] = [
+  "implementation",
   "exports",
   "publish_generated",
   "initialization",
+  "consumer",
+  "tests",
+];
+const CHANGE_SURFACE_CATEGORY_ORDER: ChangeSurfaceCategory[] = [
   "implementation",
+  "state_transitions",
+  "exports",
+  "publish_generated",
+  "initialization",
+  "consumer",
+  "tests",
 ];
 
 export interface RetrievalServiceOptions {
@@ -48,62 +63,7 @@ export class RetrievalService {
     this.semantic = new SemanticRanker(options.embeddingProvider);
   }
 
-  async keywordSearch(
-    query: string,
-    scope: SearchScope = "all",
-    limit = DEFAULT_LIMIT,
-  ): Promise<SearchResponse> {
-    const { chunks } = await this.corpus();
-    return response(
-      "field-weighted-keyword",
-      query,
-      rankKeyword(scopedChunks(chunks, scope), validateQuery(query)),
-      validateLimit(limit),
-    );
-  }
-
-  async bm25Search(
-    query: string,
-    scope: SearchScope = "all",
-    limit = DEFAULT_LIMIT,
-  ): Promise<SearchResponse> {
-    const { chunks } = await this.corpus();
-    return response(
-      "bm25",
-      query,
-      rankBm25(scopedChunks(chunks, scope), validateQuery(query)),
-      validateLimit(limit),
-    );
-  }
-
-  async semanticSearch(
-    query: string,
-    scope: SearchScope = "all",
-    limit = DEFAULT_LIMIT,
-  ): Promise<SearchResponse> {
-    const { chunks } = await this.corpus();
-    const ranked = await this.semantic.rank(
-      chunks,
-      validateQuery(query),
-      validateScope(scope),
-    );
-    return response(ranked.engine, query, ranked.hits, validateLimit(limit));
-  }
-
-  async okfGraphSearch(
-    query: string,
-    limit = DEFAULT_LIMIT,
-    hops = 1,
-  ): Promise<SearchResponse> {
-    const corpus = await this.corpus();
-    const validQuery = validateQuery(query);
-    const validHops =
-      Number.isInteger(hops) && hops >= 0 && hops <= 2 ? hops : 1;
-    const hits = rankOkfGraph(corpus, validQuery, validHops);
-    return response("okf-graph", validQuery, hits, validateLimit(limit));
-  }
-
-  async hybridSearch(
+  async search(
     query: string,
     scope: SearchScope = "all",
     limit = DEFAULT_LIMIT,
@@ -112,62 +72,36 @@ export class RetrievalService {
     const validQuery = validateQuery(query);
     const validScope = validateScope(scope);
     const chunks = scopedChunks(corpus.chunks, validScope);
-    const semantic = await this.semantic.rank(
-      corpus.chunks,
-      validQuery,
-      validScope,
-    );
+    const semantic = await this.semantic.rank(chunks, validQuery);
     const lists = [
-      { hits: rankKeyword(chunks, validQuery), name: "keyword", weight: 0.55 },
+      { hits: rankKeyword(chunks, validQuery), name: "keyword", weight: 0.75 },
       { hits: rankBm25(chunks, validQuery), name: "bm25", weight: 1 },
       { hits: semantic.hits, name: "semantic", weight: 0.9 },
     ];
-    if (validScope !== "source") {
+    if (validScope === "all" || validScope === "wiki") {
       lists.push({
         hits: rankOkfGraph(corpus, validQuery, 1),
         name: "okf_graph",
         weight: 0.8,
       });
     }
+    const ranked = reciprocalRankFusion(lists);
     return response(
-      `hybrid-rrf:${semantic.engine}`,
       validQuery,
-      reciprocalRankFusion(lists),
-      validateLimit(limit),
-    );
-  }
-
-  async testSearch(query: string, limit = 5): Promise<SearchResponse> {
-    const validQuery = validateQuery(query);
-    const validLimit = validateLimit(limit);
-    const testChunks = (await this.corpus()).chunks.filter(
-      (chunk) => chunk.scope === "source" && isTestChunk(chunk),
-    );
-    const semantic = await this.semantic.rank(testChunks, validQuery, "source");
-    return response(
-      `test-hybrid-rrf:${semantic.engine}`,
-      validQuery,
-      reciprocalRankFusion([
-        {
-          hits: rankKeyword(testChunks, validQuery),
-          name: "keyword",
-          weight: 0.6,
-        },
-        { hits: rankBm25(testChunks, validQuery), name: "bm25", weight: 1 },
-        { hits: semantic.hits, name: "semantic", weight: 0.9 },
-      ]),
-      validLimit,
+      validScope === "tests" ? deduplicateTestMirrors(ranked) : ranked,
+      normalizeLimit(limit, MAX_SEARCH_LIMIT, DEFAULT_LIMIT),
+      validScope,
     );
   }
 
   async changeSurface(
     query: string,
-    limit = 6,
+    limit = 7,
   ): Promise<ChangeSurfaceResponse> {
     const corpus = await this.corpus();
     const validQuery = validateQuery(query);
-    const validLimit = validateLimit(limit);
-    const concepts = await this.hybridSearch(validQuery, "wiki", validLimit);
+    const validLimit = normalizeLimit(limit, MAX_SURFACE_LIMIT, 6);
+    const concepts = await this.search(validQuery, "wiki", validLimit);
     const conceptChunks = conceptHits(corpus.chunks, concepts.results);
     const referencedPaths = extractPaths(
       conceptChunks.map((chunk) => chunk.text).join("\n"),
@@ -178,27 +112,35 @@ export class RetrievalService {
     const expandedQuery = [validQuery, ...symbols.slice(0, 24)].join(" ");
     const source = reciprocalRankFusion([
       {
-        hits: rankBm25(scopedChunks(corpus.chunks, "source"), expandedQuery),
+        hits: rankBm25(sourceChunks(corpus.chunks), expandedQuery),
         name: "bm25",
         weight: 1,
       },
       {
         hits: boostReferencedPaths(
-          rankKeyword(scopedChunks(corpus.chunks, "source"), expandedQuery),
+          rankKeyword(sourceChunks(corpus.chunks), expandedQuery),
           referencedPaths,
         ),
         name: "wiki_paths",
         weight: 1.1,
       },
     ]).slice(0, 160);
-    const groups = emptySurfaceGroups();
-    const candidates = emptySurfaceGroups();
+    const groups = emptyChangeSurfaceGroups();
+    const candidates = emptyChangeSurfaceGroups();
     for (const hit of source) {
       for (const category of categorize(hit.chunk)) {
         candidates[category].push(toResultItem(hit));
       }
+      if (isStateTransitionProducer(hit.chunk)) {
+        candidates.state_transitions.push(toResultItem(hit));
+      }
     }
-    fillSurfaceGroups(groups, candidates, validLimit);
+    fillGroups(
+      groups,
+      candidates,
+      validLimit,
+      CHANGE_SURFACE_CATEGORY_ORDER,
+    );
     return {
       groups,
       query: validQuery,
@@ -206,30 +148,18 @@ export class RetrievalService {
     };
   }
 
-  async symbolTrace(query: string, limit = 6): Promise<SymbolTraceResponse> {
-    const symbol = validateIdentifier(query);
-    const validLimit = validateLimit(limit);
+  async traceSymbols(
+    symbols: string[],
+    limit = 4,
+  ): Promise<SymbolTraceResponse> {
+    const validSymbols = validateSymbols(symbols);
+    const validLimit = normalizeLimit(limit, MAX_TRACE_LIMIT, 4);
     this.corpusPromise = undefined;
-    const sourceChunks = scopedChunks((await this.corpus()).chunks, "source");
-    const exactIdentifier = new RegExp(
-      `(?:^|[^A-Za-z0-9_$])${escapeRegExp(symbol)}(?:$|[^A-Za-z0-9_$])`,
-      "u",
-    );
-    const candidates = emptySurfaceGroups();
-    for (const hit of rankKeyword(sourceChunks, symbol)) {
-      if (!exactIdentifier.test(hit.chunk.text)) continue;
-      for (const category of categorize(hit.chunk)) {
-        candidates[category].push(toResultItem(hit));
-      }
-    }
-    const groups = emptySurfaceGroups();
-    fillSurfaceGroups(groups, candidates, validLimit);
+    const chunks = sourceChunks((await this.corpus()).chunks);
     return {
-      groups,
-      missing: SURFACE_CATEGORY_ORDER.filter(
-        (category) => groups[category].length === 0,
+      traces: validSymbols.map((symbol) =>
+        traceSymbol(chunks, symbol, validLimit),
       ),
-      symbol,
     };
   }
 
@@ -341,9 +271,9 @@ function boostReferencedPaths(
     .sort((left, right) => right.score - left.score);
 }
 
-function categorize(chunk: IndexedChunk): ChangeSurfaceCategory[] {
+function categorize(chunk: IndexedChunk): SymbolTraceCategory[] {
   const value = `${chunk.path}\n${chunk.text}`;
-  const categories = new Set<ChangeSurfaceCategory>();
+  const categories = new Set<SymbolTraceCategory>();
   if (
     /\b(?:exports|entrypoint|public api)\b/iu.test(value) ||
     /\bexport\s+(?:\*|\{[^}]+\})\s+from\b/iu.test(chunk.text) ||
@@ -382,9 +312,92 @@ function categorize(chunk: IndexedChunk): ChangeSurfaceCategory[] {
 
 function isTestChunk(chunk: IndexedChunk): boolean {
   return (
-    /(?:^|\/)(?:test|tests|spec|specs)(?:\/|\.)/iu.test(chunk.path) ||
-    /\b(?:describe|it|test)\s*\(/u.test(chunk.text)
+    /(?:^|\/)(?:test|tests|spec|specs)(?:\/|$)/iu.test(chunk.path) ||
+    /(?:^|[._-])(?:test|tests|spec|specs)(?:[._-]|$)/iu.test(chunk.path)
   );
+}
+
+function isStateTransitionProducer(chunk: IndexedChunk): boolean {
+  if (
+    isTestChunk(chunk) ||
+    /(?:^|\/)query\/(?:modifier|modifiers)(?:\/|$)/u.test(chunk.path)
+  ) {
+    return false;
+  }
+  const producerPath =
+    /(?:^|\/)(?:actions?|entity|mutation|relation|store|trait|world)(?:\/|[._-])/u.test(
+      chunk.path,
+    );
+  const transitionText =
+    /\b(?:add|change|defer|destroy|emit|flush|remove|replace|reset|trigger|update)(?:d|s|ing)?\b/iu.test(
+      chunk.text,
+    );
+  return producerPath && transitionText;
+}
+
+function traceSymbol(
+  chunks: IndexedChunk[],
+  symbol: string,
+  limit: number,
+): SymbolTraceResult {
+  const leaf = symbol.split(".").at(-1) ?? symbol;
+  const fullPattern = symbol.split(".").map(escapeRegExp).join("\\s*\\.\\s*");
+  const exactSymbol = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${fullPattern}(?:$|[^A-Za-z0-9_$])`,
+    "u",
+  );
+  const exactLeaf = new RegExp(
+    `(?:^|[^A-Za-z0-9_$])${escapeRegExp(leaf)}(?:$|[^A-Za-z0-9_$])`,
+    "u",
+  );
+  const candidates = emptyTraceGroups();
+  for (const hit of rankKeyword(chunks, `${symbol} ${leaf}`)) {
+    if (!exactSymbol.test(hit.chunk.text) && !exactLeaf.test(hit.chunk.text)) {
+      continue;
+    }
+    for (const category of categorize(hit.chunk)) {
+        candidates[category].push(toResultItem(hit));
+    }
+  }
+  const groups = emptyTraceGroups();
+  fillGroups(groups, candidates, limit, TRACE_CATEGORY_ORDER);
+  return {
+    groups,
+    missing: TRACE_CATEGORY_ORDER.filter(
+      (category) => candidates[category].length === 0,
+    ),
+    symbol,
+  };
+}
+
+function deduplicateTestMirrors(hits: RankedHit[]): RankedHit[] {
+  const deduplicated = new Map<string, RankedHit>();
+  for (const hit of hits) {
+    const key = canonicalTestKey(hit.chunk);
+    const current = deduplicated.get(key);
+    if (
+      !current ||
+      (isGeneratedTestPath(current.chunk.path) &&
+        !isGeneratedTestPath(hit.chunk.path))
+    ) {
+      deduplicated.set(key, hit);
+    }
+  }
+  return [...deduplicated.values()];
+}
+
+function canonicalTestKey(chunk: IndexedChunk): string {
+  const normalizedPath = chunk.path
+    .replace(
+      /(?:^|\/)packages\/publish\/tests\/(?:core\/)?/u,
+      "packages/core/tests/",
+    )
+    .replace(/(?:^|\/)(?:generated|publish)\/tests\//u, "tests/");
+  return `${normalizedPath}:${chunk.lineStart}:${(chunk.testNames ?? []).join("|")}`;
+}
+
+function isGeneratedTestPath(value: string): boolean {
+  return /(?:^|\/)(?:generated|publish)(?:\/|$)/u.test(value);
 }
 
 function extractPaths(value: string): Set<string> {
@@ -411,10 +424,22 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function emptySurfaceGroups(): Record<
+function emptyChangeSurfaceGroups(): Record<
   ChangeSurfaceCategory,
   SearchResultItem[]
 > {
+  return {
+    consumer: [],
+    exports: [],
+    implementation: [],
+    initialization: [],
+    publish_generated: [],
+    state_transitions: [],
+    tests: [],
+  };
+}
+
+function emptyTraceGroups(): Record<SymbolTraceCategory, SearchResultItem[]> {
   return {
     consumer: [],
     exports: [],
@@ -425,16 +450,17 @@ function emptySurfaceGroups(): Record<
   };
 }
 
-function fillSurfaceGroups(
-  groups: Record<ChangeSurfaceCategory, SearchResultItem[]>,
-  candidates: Record<ChangeSurfaceCategory, SearchResultItem[]>,
+function fillGroups<Category extends string>(
+  groups: Record<Category, SearchResultItem[]>,
+  candidates: Record<Category, SearchResultItem[]>,
   totalLimit: number,
+  categoryOrder: readonly Category[],
 ): void {
   let remaining = totalLimit;
   let index = 0;
   while (remaining > 0) {
     let added = false;
-    for (const category of SURFACE_CATEGORY_ORDER) {
+    for (const category of categoryOrder) {
       const candidate = candidates[category][index];
       if (!candidate || remaining === 0) continue;
       groups[category].push(candidate);
@@ -447,15 +473,15 @@ function fillSurfaceGroups(
 }
 
 function response(
-  engine: string,
   query: string,
   hits: RankedHit[],
   limit: number,
+  scope: SearchScope,
 ): SearchResponse {
   return {
-    engine,
     query,
     results: hits.slice(0, limit).map(toResultItem),
+    scope,
   };
 }
 
@@ -465,10 +491,11 @@ function toResultItem(hit: RankedHit): SearchResultItem {
     lineEnd: hit.chunk.lineEnd,
     lineStart: hit.chunk.lineStart,
     path: hit.chunk.path,
-    score: Number(hit.score.toFixed(6)),
-    ...(hit.signals ? { signals: hit.signals } : {}),
     snippet: compactSnippet(hit.chunk.text),
     ...(hit.chunk.tags.length > 0 ? { tags: hit.chunk.tags } : {}),
+    ...(hit.chunk.testNames && hit.chunk.testNames.length > 0
+      ? { testNames: hit.chunk.testNames }
+      : {}),
     ...(hit.chunk.title ? { title: hit.chunk.title } : {}),
     ...(hit.chunk.type ? { type: hit.chunk.type } : {}),
   };
@@ -483,16 +510,30 @@ function scopedChunks(
   scope: SearchScope,
 ): IndexedChunk[] {
   const valid = validateScope(scope);
-  return valid === "all"
-    ? chunks
-    : chunks.filter((chunk) => chunk.scope === valid);
+  if (valid === "all") return chunks;
+  if (valid === "wiki") {
+    return chunks.filter((chunk) => chunk.scope === "wiki");
+  }
+  if (valid === "tests") {
+    return sourceChunks(chunks).filter(isTestChunk);
+  }
+  return sourceChunks(chunks).filter((chunk) => !isTestChunk(chunk));
 }
 
 function validateScope(scope: SearchScope): SearchScope {
-  if (scope !== "all" && scope !== "source" && scope !== "wiki") {
-    throw new Error("scope must be all, source, or wiki.");
+  if (
+    scope !== "all" &&
+    scope !== "source_code" &&
+    scope !== "tests" &&
+    scope !== "wiki"
+  ) {
+    throw new Error("scope must be all, source_code, tests, or wiki.");
   }
   return scope;
+}
+
+function sourceChunks(chunks: IndexedChunk[]): IndexedChunk[] {
+  return chunks.filter((chunk) => chunk.scope === "source_code");
 }
 
 function validateQuery(query: string): string {
@@ -506,17 +547,29 @@ function validateQuery(query: string): string {
   return query.trim();
 }
 
-function validateIdentifier(query: string): string {
-  const identifier = validateQuery(query);
-  if (!IDENTIFIER.test(identifier)) {
-    throw new Error("symbol must be a single 1-100 character identifier.");
+function validateSymbols(symbols: string[]): string[] {
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    throw new Error("symbols must contain at least one identifier.");
   }
-  return identifier;
+  const unique = [...new Set(symbols.map((symbol) => symbol.trim()))];
+  if (unique.length > MAX_SYMBOLS) {
+    throw new Error(`symbols must contain at most ${MAX_SYMBOLS} identifiers.`);
+  }
+  for (const symbol of unique) {
+    if (symbol.length > 200 || !DOTTED_IDENTIFIER.test(symbol)) {
+      throw new Error(
+        "each symbol must be a plain or dotted identifier up to 200 characters.",
+      );
+    }
+  }
+  return unique;
 }
 
-function validateLimit(limit: number): number {
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
-    throw new Error(`limit must be an integer between 1 and ${MAX_LIMIT}.`);
-  }
-  return limit;
+function normalizeLimit(
+  limit: number,
+  maximum: number,
+  fallback: number,
+): number {
+  if (!Number.isInteger(limit)) return fallback;
+  return Math.max(1, Math.min(maximum, limit));
 }

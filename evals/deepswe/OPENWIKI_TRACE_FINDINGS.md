@@ -12,16 +12,28 @@ That gain currently costs context. OpenWiki increased uncached coding-agent inpu
 
 The reported **35.5% lower mean end-to-end time should not yet be treated as a product claim**. The difficult pair, query, and composite tasks were much faster, but deferred mutation and entity snapshot were slower; run scheduling and infrastructure varied. A controlled sequential rerun is needed to isolate the effect.
 
+## Changes applied from these findings
+
+The retrieval and prompting changes are implemented but have not yet been re-evaluated on DeepSWE:
+
+- The MCP surface is reduced from eight tools to `search`, `change_surface`, and batched `trace_symbols`.
+- `search` automatically combines exact, BM25, semantic, and OKF ranking behind `all`, `wiki`, `source_code`, and `tests` scopes. Ranking implementation is no longer an agent choice.
+- `tests` results include stable test names, deduplicate canonical/generated publish mirrors, and receive lifecycle/transition vocabulary expansion.
+- `trace_symbols` accepts up to 12 plain or dotted identifiers, re-indexes once, deduplicates symbols, and returns one grouped audit.
+- Limits are clamped to documented bounds instead of failing and forcing retries. Search payloads omit ranking diagnostics, snippets are shorter, and `change_surface` returns at most two related wiki concepts.
+- Generated agent guidance now makes test-scoped search conditional, calls `change_surface` only for cross-boundary changes, performs one final symbol batch, avoids duplicate wiki/retrieval reads, and requests quiet focused validation.
+- Wiki-generation guidance now asks for explicit observation windows, tracker identity, truth transitions, static-plus-temporal composition, net/coalesced deferred effects, unchanged-update behavior, constructor invariants, exact test names, and quiet validation commands.
+
 ## Where OpenWiki helped
 
-| Signal | Baseline | OpenWiki | Interpretation |
-| --- | ---: | ---: | --- |
-| Full solves | 3/15 | 6/15 | Promising quality improvement; sample is still small |
-| Mean partial score | 0.9892 | 0.9928 | Failures became narrower |
-| File-edit actions/trial | 23.2 | 16.0 | Less rework and patch churn |
-| `rg` commands/trial | 4.93 | 2.40 | Retrieval replaced broad text search |
-| Tool calls/trial | 52.3 | 57.9 | Retrieval added more calls than it eliminated |
-| Uncached input | baseline | +36.5% | Retrieval remains too expensive |
+| Signal                  | Baseline | OpenWiki | Interpretation                                       |
+| ----------------------- | -------: | -------: | ---------------------------------------------------- |
+| Full solves             |     3/15 |     6/15 | Promising quality improvement; sample is still small |
+| Mean partial score      |   0.9892 |   0.9928 | Failures became narrower                             |
+| File-edit actions/trial |     23.2 |     16.0 | Less rework and patch churn                          |
+| `rg` commands/trial     |     4.93 |     2.40 | Retrieval replaced broad text search                 |
+| Tool calls/trial        |     52.3 |     57.9 | Retrieval added more calls than it eliminated        |
+| Uncached input          | baseline |   +36.5% | Retrieval remains too expensive                      |
 
 The strongest task-level result was pair-relation tracking. Baseline trials failed across cancellation, exclusive replacement, destruction, wildcard removal, coexistence, and transition cases. OpenWiki narrowed this to one repeated mixed-requirement edge case and achieved one full solve. The traces show agents explicitly converting requirements into lifecycle checks, following the public package surface, and finding a bundler-only issue through consumer validation.
 
@@ -53,25 +65,24 @@ These should be expressed as compact behavior matrices with links to authoritati
 
 Across OpenWiki trials, retrieval was called 135 times, averaging nine calls and about 70k returned characters per trial. Fourteen calls (10.4%) were invalid because requested limits exceeded 20 or `symbol_trace` rejected dotted/multiple symbols. Fixing these retries is the first priority.
 
-| Tool | Calls | Decision |
-| --- | ---: | --- |
-| `symbol_trace` | 54 | Keep, but batch symbols, accept dotted names, cap output, and replace per-symbol prompting with one final surface audit |
-| `change_surface` | 32 | Keep; make the initial result pointer-first and run final verification only for public/export/generated/registration changes |
-| `test_search` | 16 | Keep optional; deduplicate canonical/generated mirrors and return exact test names plus short behavioral snippets |
-| `hybrid_search` | 13 | Keep as the default broad discovery tool; it already incorporates semantic ranking |
-| Keyword/BM25/OKF graph | 20 total | Preserve as retrieval engines, but consider exposing them as modes or fallbacks behind hybrid search rather than separate default tools |
-| Standalone semantic search | 0 | Hide from the default surface unless it gains a distinct workflow; do not remove semantic ranking from hybrid search |
+| Previous tool              |    Calls | Applied decision                                                                                               |
+| -------------------------- | -------: | -------------------------------------------------------------------------------------------------------------- |
+| `symbol_trace`             |       54 | Replaced by batched `trace_symbols`, including dotted names and one shared re-index                            |
+| `change_surface`           |       32 | Retained with compact results; prompt use is limited to public/cross-package/generated/registration changes    |
+| `test_search`              |       16 | Folded into `search(scope: "tests")`; use is conditional and results expose test names and deduplicate mirrors |
+| `hybrid_search`            |       13 | Replaced by `search`; hybrid ranking remains the automatic default                                             |
+| Keyword/BM25/OKF graph     | 20 total | Removed from the agent tool surface and retained as internal ranking engines                                   |
+| Standalone semantic search |        0 | Removed from the tool surface; semantic ranking remains inside `search`                                        |
 
-`symbol_trace` is overused: 29 of its 54 calls came from the entity-snapshot task. `change_surface` is commonly called twice and sometimes three times with overlapping results. The tool surface should guide agents toward four workflows—change mapping, broad discovery, focused test discovery, and batched public-surface verification—rather than exposing every ranking implementation as a separate choice.
+`symbol_trace` was overused: 29 of its 54 calls came from the entity-snapshot task. `change_surface` was commonly called twice and sometimes three times with overlapping results. The new surface represents three agent decisions—search, pre-edit change mapping, and post-edit batched verification—while scope selects the corpus without exposing ranking internals.
 
 ## Recommended next experiments
 
-1. **Fix tool ergonomics:** clamp limits, accept dotted symbols, add multi-symbol tracing, and eliminate identical retry calls.
-2. **Run the H4 policy with batched tracing:** compare current `symbol_trace` against one final batch audit.
-3. **Make retrieval pointer-first:** return paths, symbols, test names, and small snippets by default; expand only on request. Target under 20k retrieval characters per trial.
-4. **Improve `test_search`:** rank by requested transition behavior and observation phase, deduplicate generated mirrors, then compare optional use against H4 alone.
-5. **Add quiet validation guidance:** capture failures in full but suppress successful build/test logs. OpenWiki trials produced substantially more validation output.
-6. **Use query predicates as the discriminator:** test whether new observation-window and tracker-state wiki content converts the repeated 39/43 result into a full solve.
-7. **Repeat timing under controlled scheduling:** same task order, concurrency, warmup, and infrastructure; report medians and successful-trial timing separately.
+1. **Re-run the H4 policy with the new surface:** measure retrieval calls, invalid calls, payload characters, coding-agent tokens, edits, and score. Invalid retrieval calls should fall to zero.
+2. **Validate compact retrieval:** target under 20k retrieval characters per trial without reducing solve rate or partial score.
+3. **Ablate test scope:** compare conditional `search(scope: "tests")` against the same policy with test retrieval disabled.
+4. **Use query predicates as the discriminator:** test whether new observation-window and tracker-state wiki content converts the repeated 39/43 result into a full solve.
+5. **Measure batched tracing:** compare symbols per call, trace payload, and public-surface misses against the old per-symbol behavior.
+6. **Repeat timing under controlled scheduling:** same task order, concurrency, warmup, and infrastructure; report medians and successful-trial timing separately.
 
 The near-term objective should be to preserve OpenWiki's solve-rate and rework gains while removing duplicated context. The best current direction is **behavior-matrix prompting plus compact, workflow-oriented retrieval**, not mandatory use of more tools.

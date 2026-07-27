@@ -2,6 +2,7 @@
 
 import { createInterface } from "node:readline";
 import { OPENWIKI_VERSION } from "../constants.js";
+import { RETRIEVAL_TOOL_DEFINITIONS } from "./mcp-tools.js";
 import { RetrievalService } from "./search-service.js";
 import type { EmbeddingProvider } from "./semantic.js";
 import type { SearchScope } from "./types.js";
@@ -12,52 +13,6 @@ interface JsonRpcRequest {
   method?: string;
   params?: Record<string, unknown>;
 }
-
-const TOOL_DEFINITIONS = [
-  tool(
-    "symbol_trace",
-    "After editing, re-index source and trace one exact public symbol through implementation, exports, publish/generated mirrors, initialization, consumer imports, and tests. Missing groups are verification gaps, not proof that a layer is required.",
-    querySchema({ limit: integerSchema(1, 12, 6) }),
-  ),
-  tool(
-    "change_surface",
-    "Find the complete change surface for a feature: relevant OKF concepts, implementation, exports, publish/generated mirrors, initialization, consumer imports, and tests. Use this first for public or cross-package changes.",
-    querySchema({ limit: integerSchema(1, 12, 6) }),
-  ),
-  tool(
-    "test_search",
-    "Find analogous focused tests using hybrid keyword, BM25, and semantic ranking restricted to test/spec source chunks. Use this to derive lifecycle, transition, isolation, reset, and composition checks before implementing stateful behavior.",
-    searchSchema(),
-  ),
-  tool(
-    "hybrid_search",
-    "Hybrid reciprocal-rank search across BM25, semantic vectors, weighted keywords, and the OKF concept graph.",
-    searchSchema(),
-  ),
-  tool(
-    "okf_graph_search",
-    "Search OKF concept metadata, then expand across semantic Markdown relationships, incoming links, and shared tags.",
-    querySchema({
-      hops: integerSchema(0, 2, 1),
-      limit: integerSchema(1, 20, 8),
-    }),
-  ),
-  tool(
-    "semantic_search",
-    "Vector semantic search over bounded wiki/source candidates. The response reports whether OpenAI embeddings or the deterministic local vector fallback was used.",
-    searchSchema(),
-  ),
-  tool(
-    "bm25_search",
-    "BM25 lexical search over wiki sections and source-code chunks.",
-    searchSchema(),
-  ),
-  tool(
-    "keyword_search",
-    "Fast field-weighted exact and token search over OKF metadata, headings, paths, and content.",
-    searchSchema(),
-  ),
-] as const;
 
 const options = parseOptions(process.argv.slice(2));
 const service = new RetrievalService(options);
@@ -86,7 +41,7 @@ async function handleLine(line: string): Promise<void> {
         writeResult(request.id, {
           capabilities: { tools: { listChanged: false } },
           instructions:
-            "Use change_surface first for public, cross-package, generated-artifact, or runtime-registration changes. Verify returned citations in source before editing. Use hybrid_search for broad discovery, okf_graph_search for related concepts, semantic_search for vocabulary mismatch, BM25 for precise terms, and keyword_search for exact symbols. All tools are read-only and return bounded excerpts.",
+            "Use search for focused wiki, source_code, or tests retrieval. Use change_surface before public or cross-package edits, and trace_symbols once after changing public symbols. Verify citations in source. All tools are read-only and return bounded excerpts.",
           protocolVersion: "2025-06-18",
           serverInfo: { name: "openwiki-retrieval", version: OPENWIKI_VERSION },
         });
@@ -95,7 +50,7 @@ async function handleLine(line: string): Promise<void> {
         writeResult(request.id, {});
         return;
       case "tools/list":
-        writeResult(request.id, { tools: TOOL_DEFINITIONS });
+        writeResult(request.id, { tools: RETRIEVAL_TOOL_DEFINITIONS });
         return;
       case "tools/call":
         await callTool(request.id, request.params ?? {});
@@ -119,55 +74,26 @@ async function callTool(
 ): Promise<void> {
   const name = typeof params.name === "string" ? params.name : "";
   const args = isRecord(params.arguments) ? params.arguments : {};
-  const query = requiredString(args.query, "query");
   const limit = optionalInteger(args.limit, 8);
   let result: unknown;
   switch (name) {
-    case "symbol_trace":
-      result = await service.symbolTrace(query, optionalInteger(args.limit, 6));
+    case "search":
+      result = await service.search(
+        requiredString(args.query, "query"),
+        optionalScope(args.scope),
+        limit,
+      );
       break;
     case "change_surface":
       result = await service.changeSurface(
-        query,
+        requiredString(args.query, "query"),
         optionalInteger(args.limit, 6),
       );
       break;
-    case "test_search":
-      result = await service.testSearch(query, optionalInteger(args.limit, 5));
-      break;
-    case "hybrid_search":
-      result = await service.hybridSearch(
-        query,
-        optionalScope(args.scope),
-        limit,
-      );
-      break;
-    case "okf_graph_search":
-      result = await service.okfGraphSearch(
-        query,
-        limit,
-        optionalInteger(args.hops, 1),
-      );
-      break;
-    case "semantic_search":
-      result = await service.semanticSearch(
-        query,
-        optionalScope(args.scope),
-        limit,
-      );
-      break;
-    case "bm25_search":
-      result = await service.bm25Search(
-        query,
-        optionalScope(args.scope),
-        limit,
-      );
-      break;
-    case "keyword_search":
-      result = await service.keywordSearch(
-        query,
-        optionalScope(args.scope),
-        limit,
+    case "trace_symbols":
+      result = await service.traceSymbols(
+        requiredStrings(args.symbols, "symbols"),
+        optionalInteger(args.limit, 4),
       );
       break;
     default:
@@ -205,51 +131,25 @@ function parseOptions(args: string[]): {
   };
 }
 
-function tool(name: string, description: string, inputSchema: object): object {
-  return {
-    annotations: { destructiveHint: false, readOnlyHint: true },
-    description,
-    inputSchema,
-    name,
-  };
-}
-
-function searchSchema(): object {
-  return querySchema({
-    limit: integerSchema(1, 10, 5),
-    scope: {
-      default: "all",
-      enum: ["all", "wiki", "source"],
-      type: "string",
-    },
-  });
-}
-
-function querySchema(properties: Record<string, object>): object {
-  return {
-    additionalProperties: false,
-    properties: {
-      query: { maxLength: 500, minLength: 1, type: "string" },
-      ...properties,
-    },
-    required: ["query"],
-    type: "object",
-  };
-}
-
-function integerSchema(
-  minimum: number,
-  maximum: number,
-  defaultValue: number,
-): object {
-  return { default: defaultValue, maximum, minimum, type: "integer" };
-}
-
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${name} is required.`);
   }
   return value;
+}
+
+function requiredStrings(value: unknown, name: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${name} must be a non-empty string array.`);
+  }
+  const strings: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new Error(`${name} must be a non-empty string array.`);
+    }
+    strings.push(item);
+  }
+  return strings;
 }
 
 function optionalInteger(value: unknown, fallback: number): number {
@@ -259,7 +159,10 @@ function optionalInteger(value: unknown, fallback: number): number {
 }
 
 function optionalScope(value: unknown): SearchScope {
-  return value === "source" || value === "wiki" || value === "all"
+  return value === "source_code" ||
+    value === "tests" ||
+    value === "wiki" ||
+    value === "all"
     ? value
     : "all";
 }

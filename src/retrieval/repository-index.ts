@@ -59,6 +59,8 @@ const EXCLUDED_DIRECTORIES = new Set([
 const SECRET_FILE =
   /^(?:\.env(?:\..*)?|.*\.(?:crt|jks|key|keystore|p12|pem|pfx)|credentials\.json|token(?:\.json)?|cookies?(?:\.(?:db|sqlite|txt))?|\.git-credentials|hosts\.yml)$/iu;
 const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/gu;
+const TEST_NAME =
+  /\b(?:describe|it|test)(?:\.(?:each|only|skip|todo))?\s*\(\s*(["'`])([^\n]{1,160}?)\1/gu;
 
 export interface RepositoryIndexOptions {
   repoRoot: string;
@@ -150,16 +152,19 @@ async function readSourceChunks(
       if (selected.every((line) => !line.trim())) continue;
       const lineStart = start + 1;
       const lineEnd = start + selected.length;
+      const text = selected.join("\n");
+      const testNames = extractTestNames(text);
       chunks.push({
-        fields: relative,
+        fields: [relative, ...testNames].join("\n"),
         id: `source:${relative}:${lineStart}`,
         kind: "source",
         lineEnd,
         lineStart,
         path: relative,
-        scope: "source",
+        scope: "source_code",
         tags: pathTags(relative),
-        text: selected.join("\n"),
+        ...(testNames.length > 0 ? { testNames } : {}),
+        text,
         title: path.basename(relative),
       });
     }
@@ -330,6 +335,16 @@ function pathTags(relative: string): string[] {
 
 function firstHeading(body: string): string | undefined {
   return /^#\s+(.+?)\s*$/mu.exec(body)?.[1]?.trim();
+}
+
+function extractTestNames(value: string): string[] {
+  return [
+    ...new Set(
+      [...value.matchAll(TEST_NAME)]
+        .map((match) => match[2]?.trim())
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ];
 }
 
 function stringField(value: unknown): string | undefined {

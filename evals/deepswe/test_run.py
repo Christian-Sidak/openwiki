@@ -85,19 +85,14 @@ class DeepSWEHarnessTests(unittest.TestCase):
         adapter = (deepswe_run.EVAL_DIR / "openwiki_codex.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("just-in-time", adapter)
-        self.assertIn("Before a repository-wide rg", adapter)
-        self.assertIn("only the relevant linked pages", adapter)
-        self.assertIn("Re-consult the wiki", adapter)
-        self.assertIn("import path real consumers use", adapter)
-        self.assertIn("passing only internal unit tests", adapter)
+        self.assertIn("generated quickstart", adapter)
+        self.assertIn("follow the OpenWiki instructions", adapter)
         self.assertIn("codex mcp add openwiki_retrieval", adapter)
-        self.assertIn("call change_surface", adapter)
-        self.assertIn("symbol_trace", adapter)
-        self.assertIn("okf_graph_search", adapter)
-        self.assertIn("every externally observable", adapter)
-        self.assertIn("independent instances", adapter)
-        self.assertIn("use test_search", adapter)
+        self.assertIn("read-only openwiki_retrieval MCP tools", adapter)
+        self.assertIn("treat /app as", adapter)
+        self.assertIn("the source of truth", adapter)
+        self.assertIn("do not edit", adapter)
+        self.assertIn("/tmp/openwiki-source", adapter)
 
     def test_eval_defaults_use_terra_without_changing_openwiki_defaults(self) -> None:
         args = deepswe_run.parse_args(["paired"])
@@ -227,6 +222,139 @@ class DeepSWEHarnessTests(unittest.TestCase):
         self.assertNotIn("HARBOR_LANGSMITH_EXPERIMENT", child_env)
         self.assertNotIn("HARBOR_LANGSMITH_EXPERIMENT_ID", child_env)
 
+    def test_cleanup_removes_only_inactive_owned_trial_network(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            jobs_dir = Path(temp_dir)
+            job_dir = jobs_dir / "example-job"
+            trial_dir = job_dir / "koota-query__AbC123"
+            trial_dir.mkdir(parents=True)
+            (job_dir / "config.json").write_text("{}\n", encoding="utf-8")
+            (trial_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            network_name = "koota-query__abc123__env_default"
+            project_name = "koota-query__abc123__env"
+
+            def docker_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+                self.assertFalse(kwargs["shell"])
+                if command[2] == "ls":
+                    return SimpleNamespace(returncode=0, stdout=f"{network_name}\n")
+                if command[2] == "inspect":
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout=json.dumps(
+                            [
+                                {
+                                    "Name": network_name,
+                                    "Labels": {
+                                        "com.docker.compose.project": project_name,
+                                        "com.docker.compose.network": "default",
+                                    },
+                                    "Containers": {},
+                                }
+                            ]
+                        ),
+                    )
+                self.assertEqual(["docker", "network", "rm", network_name], command)
+                return SimpleNamespace(returncode=0, stdout=network_name)
+
+            with patch.object(
+                deepswe_run.subprocess, "run", side_effect=docker_run
+            ) as run:
+                deepswe_run.cleanup_stale_docker_networks(jobs_dir)
+
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertIn(["docker", "network", "inspect", network_name], commands)
+            self.assertIn(["docker", "network", "rm", network_name], commands)
+
+    def test_cleanup_skips_active_or_foreign_trial_networks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job_dir = Path(temp_dir) / "example-job"
+            active_trial = job_dir / "active__AbC"
+            foreign_trial = job_dir / "foreign__DeF"
+            active_trial.mkdir(parents=True)
+            foreign_trial.mkdir()
+            network_names = {
+                "active__abc__env_default": {
+                    "com.docker.compose.project": "active__abc__env",
+                    "com.docker.compose.network": "default",
+                },
+                "foreign__def__env_default": {
+                    "com.docker.compose.project": "another-project",
+                    "com.docker.compose.network": "default",
+                },
+            }
+
+            def docker_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+                self.assertFalse(kwargs["shell"])
+                if command[2] == "ls":
+                    return SimpleNamespace(
+                        returncode=0, stdout="\n".join(network_names) + "\n"
+                    )
+                network_name = command[3]
+                containers = (
+                    {"attached": {}} if network_name.startswith("active") else {}
+                )
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "Name": network_name,
+                                "Labels": network_names[network_name],
+                                "Containers": containers,
+                            }
+                        ]
+                    ),
+                )
+
+            with patch.object(
+                deepswe_run.subprocess, "run", side_effect=docker_run
+            ) as run:
+                deepswe_run._cleanup_docker_networks(
+                    [(job_dir, active_trial), (job_dir, foreign_trial)]
+                )
+
+            self.assertFalse(
+                any(call.args[0][2] == "rm" for call in run.call_args_list)
+            )
+
+    def test_run_condition_cleans_docker_networks_even_when_harbor_fails(self) -> None:
+        args = deepswe_run.parse_args(
+            ["baseline", "--env-file", "credentials.env"]
+        )
+        with (
+            patch.object(deepswe_run, "cleanup_stale_docker_networks") as preflight,
+            patch.object(deepswe_run, "cleanup_job_docker_networks") as final_cleanup,
+            patch.object(
+                deepswe_run, "run_checked", side_effect=RuntimeError("harbor failed")
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "harbor failed"):
+                deepswe_run.run_condition(args, "baseline")
+
+        preflight.assert_called_once_with(args.jobs_dir)
+        final_cleanup.assert_called_once_with(
+            args.jobs_dir, deepswe_run.harbor_job_name(args, "baseline")
+        )
+
+    def test_cleanup_failure_does_not_mask_harbor_failure(self) -> None:
+        args = deepswe_run.parse_args(
+            ["baseline", "--env-file", "credentials.env"]
+        )
+        with (
+            patch.object(deepswe_run, "cleanup_stale_docker_networks"),
+            patch.object(
+                deepswe_run,
+                "cleanup_job_docker_networks",
+                side_effect=RuntimeError("cleanup failed"),
+            ),
+            patch.object(
+                deepswe_run, "run_checked", side_effect=RuntimeError("harbor failed")
+            ),
+            self.assertWarnsRegex(RuntimeWarning, "final cleanup failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "harbor failed"):
+                deepswe_run.run_condition(args, "baseline")
+
     def test_seeded_task_selection_is_reproducible(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -252,6 +380,75 @@ class DeepSWEHarnessTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(2, len(first or []))
             self.assertTrue(all("/" not in task_id for task_id in first or []))
+
+    def test_named_task_suites_are_independent_and_composable(self) -> None:
+        koota = deepswe_run.TASK_SUITES["koota-5"]
+        stress = deepswe_run.WIKI_STRESS_15_TASKS
+        combined = deepswe_run.TASK_SUITES["openwiki-20"]
+
+        self.assertEqual({"koota-5", "openwiki-20"}, set(deepswe_run.TASK_SUITES))
+        self.assertEqual(5, len(koota))
+        self.assertEqual(15, len(stress))
+        self.assertEqual(20, len(combined))
+        self.assertTrue(set(koota).isdisjoint(stress))
+        self.assertEqual((*koota, *stress), combined)
+
+    def test_named_task_suite_selects_every_exact_member(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = deepswe_run.TASK_SUITES["openwiki-20"]
+            for name in expected:
+                task_dir = root / "tasks" / name
+                task_dir.mkdir(parents=True)
+                (task_dir / "task.toml").write_text(
+                    f'[task]\nname = "datacurve/{name}"\n', encoding="utf-8"
+                )
+            args = deepswe_run.parse_args(
+                [
+                    "baseline",
+                    "--deepswe-dir",
+                    str(root),
+                    "--task-suite",
+                    "openwiki-20",
+                    "--n-tasks",
+                    "1",
+                ]
+            )
+
+            self.assertEqual(list(expected), deepswe_run.select_tasks(args))
+
+    def test_named_task_suite_reports_missing_pinned_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            task_dir = root / "tasks" / deepswe_run.KOOTA_5_TASKS[0]
+            task_dir.mkdir(parents=True)
+            (task_dir / "task.toml").write_text(
+                f'[task]\nname = "datacurve/{task_dir.name}"\n', encoding="utf-8"
+            )
+            args = deepswe_run.parse_args(
+                [
+                    "baseline",
+                    "--deepswe-dir",
+                    str(root),
+                    "--task-suite",
+                    "koota-5",
+                ]
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing pinned tasks"):
+                deepswe_run.select_tasks(args)
+
+    def test_named_task_suite_cannot_be_combined_with_task_filter(self) -> None:
+        with self.assertRaises(SystemExit):
+            deepswe_run.parse_args(
+                [
+                    "baseline",
+                    "--task-suite",
+                    "koota-5",
+                    "--task",
+                    "koota-*",
+                ]
+            )
 
     def test_load_and_aggregate_trial_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -52,6 +52,12 @@ install and run Codex and OpenWiki's pinned SQLite binding, plus the LangSmith
 API and trace-ingest hosts required by every traced run. The adapter uses the
 task image's existing Node runtime and installs the pinned Codex CLI directly,
 avoiding Harbor's NVM bootstrap.
+
+For Docker runs, the harness removes inactive per-trial networks after each job
+and checks completed prior jobs for stale networks before launching. Cleanup is
+restricted to networks derived from Harbor result directories, verifies exact
+Docker Compose ownership labels, and skips every network with an attached
+container; it never performs a global Docker network prune.
 If `OPENAI_BASE_URL` uses another gateway, pass its hostname (not a URL) with
 `--allow-host gateway.example.com`. The separate verifier environment remains
 offline.
@@ -156,11 +162,55 @@ Use `--task '<glob>'` one or more times to select named tasks. The harness uses
 Use `--attempts 3` for repeated trials and `--environment modal` for Harbor's
 hosted parallel environment.
 
+### Named OpenWiki task suites
+
+Use `--task-suite` for the two exact, reproducible OpenWiki cohorts. A suite
+selects all of its members regardless of `--n-tasks` and cannot be combined
+with `--task`:
+
+```bash
+# Existing fast iteration set: the five Koota tasks
+python3 evals/deepswe/run.py paired --task-suite koota-5
+
+# Broader set: the five Koota tasks plus 15 independent repositories
+python3 evals/deepswe/run.py paired --task-suite openwiki-20
+```
+
+The 15 tasks added to `openwiki-20` are not exposed as a separate runnable
+suite. They were selected from the user-provided `gpt-5.6-terra [medium]`
+leaderboard export. Across their 42 listed trials they had an 81% failure rate,
+40.8 mean steps, and $0.88 mean reported cost. The local harness uses high
+reasoning, so these figures are selection signals rather than expected results.
+The export did not include token counts; reported cost and steps are only
+proxies for token intensity.
+
+| Task                                       | Repository / language         | Terra-medium signal    | What it stresses                                                   |
+| ------------------------------------------ | ----------------------------- | ---------------------- | ------------------------------------------------------------------ |
+| `adaptix-name-mapping-aliases`             | Adaptix / Python              | 1/4 failed, 47.0 steps | High-cost positive control; mapping and serialization seams        |
+| `dynamodb-toolbox-lazy-recursive-schemas`  | DynamoDB Toolbox / TypeScript | 4/4 failed, 40.8 steps | Recursive types, DTO round trips, JSON Schema, update expressions  |
+| `pebble-durability-wait-apis`              | Pebble / Go                   | 2/2 failed, 45.5 steps | Concurrency, durability callbacks, waits, metrics, reset behavior  |
+| `scriggo-method-declarations`              | Scriggo / Go                  | 2/2 failed, 44.0 steps | Compiler/runtime method sets and interface dispatch                |
+| `helm-unified-manifest-stream`             | Helm / Go                     | 1/4 failed, 42.8 steps | Large-repo positive control across multiple command paths          |
+| `fastapi-implicit-head-options`            | FastAPI / Python              | 2/3 failed, 38.7 steps | Routing inheritance, configuration, HEAD/OPTIONS semantics         |
+| `boa-hierarchical-evaluation-cancellation` | Boa / Rust                    | 3/3 failed, 38.0 steps | Nested cancellation and async lifecycle propagation                |
+| `bandit-structured-nosec-directives`       | Bandit / Python               | 2/2 failed, 39.0 steps | Parser state, scoped directives, selector semantics                |
+| `effect-sse-httpapi-streaming`             | Effect / TypeScript           | 3/3 failed, 42.3 steps | Large monorepo; server/client streaming and public API propagation |
+| `katex-multicolumn-array-spans`            | KaTeX / JavaScript            | 2/2 failed, 40.5 steps | Parser-to-layout invariants and error handling                     |
+| `prometheus-transactional-reload-status`   | Prometheus / Go               | 1/2 failed, 36.5 steps | Large repo; transactions, rollback, persistence, HTTP status       |
+| `opa-template-string-reconstruction`       | OPA / Go                      | 3/3 failed, 39.7 steps | Compiler AST reconstruction and syntax preservation                |
+| `oxvg-structural-selector-preservation`    | OXVG / Rust                   | 3/3 failed, 39.7 steps | Optimizer correctness under structural CSS selectors               |
+| `kgateway-consistent-hash-policy`          | kgateway / Go                 | 2/2 failed, 38.5 steps | Kubernetes API-to-runtime translation and merge behavior           |
+| `python-statemachine-state-data-scoping`   | python-statemachine / Python  | 3/3 failed, 36.3 steps | Hierarchical state ownership, history, isolation, lifecycle resets |
+
 Treatment runs register `openwiki-retrieval-mcp` inside Codex's isolated home.
-It provides keyword, BM25, semantic-vector, OKF graph, hybrid, and change-surface
-tools over `/app` plus the generated wiki. Local deterministic vectors are the
-default. Pass `--retrieval-embedding-provider openai` to opt into bounded
-`text-embedding-3-small` reranking; provider failures fall back to local vectors.
+It exposes three read-only workflows over `/app` and the generated wiki:
+`search` with `all`, `wiki`, `source_code`, and `tests` scopes;
+`change_surface` for pre-edit cross-boundary mapping; and batched
+`trace_symbols` for post-edit public-surface verification. Search automatically
+combines exact, BM25, semantic-vector, and OKF graph ranking. Local deterministic
+vectors are the default. Pass `--retrieval-embedding-provider openai` to opt into
+bounded `text-embedding-3-small` reranking; provider failures fall back to local
+vectors.
 
 If runs already exist, summarize them without invoking Harbor:
 
