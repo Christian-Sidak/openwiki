@@ -96,10 +96,27 @@ export async function recordRun(details: RunTelemetry): Promise<void> {
 
   try {
     const ci = isCiEnvironment();
+    const production = isProductionBuild();
+    if (!production) {
+      const event = buildRunEvent(details, {
+        ci,
+        production,
+        distinctId: "local-dev",
+      });
+      await writeTelemetryFile(details.telemetryFile, {
+        disabled: false,
+        ci,
+        localDev: true,
+        sent: false,
+        event,
+      });
+      return;
+    }
+
     const distinctId = ci ? ciSentinelId() : (await getOrCreateInstallId()).id;
     const event = buildRunEvent(details, {
       ci,
-      production: isProductionBuild(),
+      production,
       distinctId,
     });
     const sent = await capture(event);

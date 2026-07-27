@@ -502,8 +502,9 @@ If there's an inference provider or model you'd like to see added, please open a
 
 ## Telemetry
 
-OpenWiki collects anonymous, aggregate usage data so we can understand how the
-tool is used and improve it. Telemetry is on by default and easy to turn off.
+OpenWiki collects anonymous, aggregate usage data from the published CLI so we
+can understand how the tool is used and improve it. Telemetry is on by default
+for published builds and easy to turn off.
 
 **What is collected**, on a single `openwiki_run` event, keyed by a random
 install ID stored locally in `~/.openwiki/install-id`:
@@ -522,12 +523,14 @@ information. Geoip enrichment is disabled and your IP is never stored. Events
 are grouped by your random install ID so we can measure repeat usage, but that
 ID contains no personal data.
 
-**Scheduled/CI runs** are collected as anonymous reliability data (tagged so
-they can be told apart from human runs), under a shared CI identifier rather than
-a per-machine install ID, and never counted as distinct installs. To disable in
-CI, set `OPENWIKI_TELEMETRY_DISABLED=1` in your workflow environment.
+**Scheduled/CI runs** from published builds are collected as anonymous
+reliability data (tagged so they can be told apart from human runs), under a
+shared CI identifier rather than a per-machine install ID, and never counted as
+distinct installs. To disable in CI, set `OPENWIKI_TELEMETRY_DISABLED=1` in your
+workflow environment.
 
-To see exactly what a run would send, add `--telemetry-file=<path>` to any run.
+**Local development/source runs** are not sent. To see exactly what a published
+run would send, add `--telemetry-file=<path>` to any run.
 
 ### Opting out
 

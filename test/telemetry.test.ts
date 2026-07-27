@@ -31,7 +31,7 @@ import {
   isTelemetryDisabled,
   noticeSuppressed,
 } from "../src/telemetry/gates.ts";
-import { recordRun } from "../src/telemetry/senders.ts";
+import { buildRunEvent, recordRun } from "../src/telemetry/senders.ts";
 import type { RunTelemetry } from "../src/telemetry/types.ts";
 
 const ENV_KEYS = [
@@ -209,30 +209,36 @@ describe("senders.recordRun", () => {
     await rm(file, { force: true });
   });
 
-  test("human run uses the install id, ci=false, profile off", async () => {
+  test("source run sends nothing and tees a local-dev marker", async () => {
     const file = path.join(tmpdir(), "ow-tel-normal.json");
 
     await recordRun(runDetails({ telemetryFile: file }));
 
     const tee = (await readTee(file)) as {
       ci: boolean;
+      localDev: boolean;
       sent: boolean;
       event: {
         distinctId: string;
-        properties: { ci: boolean; $process_person_profile: boolean };
+        properties: {
+          ci: boolean;
+          production: boolean;
+          $process_person_profile: boolean;
+        };
       };
     };
     expect(tee.ci).toBe(false);
-    expect(tee.sent).toBe(true);
-    expect(tee.event.distinctId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(tee.localDev).toBe(true);
+    expect(tee.sent).toBe(false);
+    expect(tee.event.distinctId).toBe("local-dev");
     expect(tee.event.properties.ci).toBe(false);
-    // Every run is anonymous: no person profile is ever created.
+    expect(tee.event.properties.production).toBe(false);
     expect(tee.event.properties.$process_person_profile).toBe(false);
-    expect(posthog.captureImmediate).toHaveBeenCalledOnce();
+    expect(posthog.captureImmediate).not.toHaveBeenCalled();
     await rm(file, { force: true });
   });
 
-  test("CI run uses the sentinel id, ci=true, profile off", async () => {
+  test("source CI run also sends nothing", async () => {
     process.env.OPENWIKI_SCHEDULED = "1";
     const file = path.join(tmpdir(), "ow-tel-ci.json");
 
@@ -240,16 +246,20 @@ describe("senders.recordRun", () => {
 
     const tee = (await readTee(file)) as {
       ci: boolean;
+      localDev: boolean;
+      sent: boolean;
       event: {
         distinctId: string;
         properties: { ci: boolean; $process_person_profile: boolean };
       };
     };
     expect(tee.ci).toBe(true);
-    expect(tee.event.distinctId).toBe("ci-unknown");
+    expect(tee.localDev).toBe(true);
+    expect(tee.sent).toBe(false);
+    expect(tee.event.distinctId).toBe("local-dev");
     expect(tee.event.properties.ci).toBe(true);
-    // CI stays anonymous (no person profile).
     expect(tee.event.properties.$process_person_profile).toBe(false);
+    expect(posthog.captureImmediate).not.toHaveBeenCalled();
     await rm(file, { force: true });
   });
 
@@ -274,20 +284,23 @@ describe("getConfiguredConnectorIds", () => {
   });
 });
 
-describe("recordRun connector properties", () => {
-  function runEvent(): { event: string; properties: Record<string, unknown> } {
-    return posthog.captureImmediate.mock.calls[0]?.[0] as {
-      event: string;
-      properties: Record<string, unknown>;
-    };
+describe("buildRunEvent connector properties", () => {
+  function runEvent(details: RunTelemetry): {
+    event: string;
+    properties: Record<string, unknown>;
+  } {
+    return buildRunEvent(details, {
+      ci: false,
+      production: true,
+      distinctId: "id-1",
+    });
   }
 
-  test("configured connectors become boolean connector_<id> properties", async () => {
-    await recordRun(
+  test("configured connectors become boolean connector_<id> properties", () => {
+    const arg = runEvent(
       runDetails({ configuredConnectors: ["web-search", "notion"] }),
     );
 
-    const arg = runEvent();
     expect(arg.event).toBe("openwiki_run");
     // Hyphens are normalized to underscores; only configured ones appear.
     expect(arg.properties).toMatchObject({
@@ -297,29 +310,32 @@ describe("recordRun connector properties", () => {
     expect(arg.properties).not.toHaveProperty("connector_slack");
   });
 
-  test("no connector_ properties when nothing is configured", async () => {
-    await recordRun(runDetails({ configuredConnectors: [] }));
+  test("no connector_ properties when nothing is configured", () => {
+    const props = runEvent(runDetails({ configuredConnectors: [] })).properties;
 
-    const props = runEvent().properties;
     expect(Object.keys(props).some((key) => key.startsWith("connector_"))).toBe(
       false,
     );
   });
 
-  test("stamps production=false when running from source (dev/test)", async () => {
-    // Tests import from src/, so isProductionBuild() (dist/ check) is false;
-    // the published build runs from dist/ and would send production=true.
-    await recordRun(runDetails());
+  test("stamps production from the supplied context", () => {
+    const event = buildRunEvent(runDetails(), {
+      ci: false,
+      production: false,
+      distinctId: "id-1",
+    });
 
-    expect(runEvent().properties.production).toBe(false);
+    expect(event.properties.production).toBe(false);
   });
 
-  test("update runs omit the init-only setup fields", async () => {
+  test("update runs omit the init-only setup fields", () => {
     // The agent only sets mode/provider/connectors on init; an update payload
     // built without them must not carry mode/provider/connector_ properties.
-    await recordRun({ command: "update", outcome: "success" });
+    const props = runEvent({
+      command: "update",
+      outcome: "success",
+    }).properties;
 
-    const props = runEvent().properties;
     expect(props).not.toHaveProperty("mode");
     expect(props).not.toHaveProperty("provider");
     expect(Object.keys(props).some((key) => key.startsWith("connector_"))).toBe(
