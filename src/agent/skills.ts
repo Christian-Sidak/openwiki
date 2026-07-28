@@ -1,7 +1,10 @@
 import { cp, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ensureOpenWikiHome, openWikiSkillsDir } from "../openwiki-home.js";
+import {
+  ensureOpenWikiHome,
+  openWikiSkillsDir,
+} from "../config/openwiki-home.js";
 
 const bundledSkillsDir = fileURLToPath(
   new URL("../../skills", import.meta.url),
