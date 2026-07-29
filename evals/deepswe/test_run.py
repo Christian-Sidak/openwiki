@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import io
 import os
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,7 @@ from unittest.mock import Mock, patch
 from requests import HTTPError, Response
 
 import deepswe_langsmith
+import openwiki_codex
 import run as deepswe_run
 
 
@@ -71,6 +74,16 @@ class DeepSWEHarnessTests(unittest.TestCase):
         self.assertIn("npm rebuild better-sqlite3", adapter)
         self.assertIn("require('better-sqlite3')", adapter)
 
+    def test_agent_install_ignores_broken_nodesource_apt_repository(self) -> None:
+        adapter = (deepswe_run.EVAL_DIR / "openwiki_codex.py").read_text(
+            encoding="utf-8"
+        )
+        disable_index = adapter.index("/etc/apt/sources.list.d/*nodesource*")
+        update_index = adapter.index("apt-get update")
+
+        self.assertLess(disable_index, update_index)
+        self.assertIn('$source.disabled', adapter)
+
     def test_adapter_captures_committed_patch_for_separate_verifier(self) -> None:
         adapter = (deepswe_run.EVAL_DIR / "openwiki_codex.py").read_text(
             encoding="utf-8"
@@ -85,14 +98,15 @@ class DeepSWEHarnessTests(unittest.TestCase):
         adapter = (deepswe_run.EVAL_DIR / "openwiki_codex.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("generated quickstart", adapter)
-        self.assertIn("follow the OpenWiki instructions", adapter)
         self.assertIn("codex mcp add openwiki_retrieval", adapter)
-        self.assertIn("read-only openwiki_retrieval MCP tools", adapter)
-        self.assertIn("treat /app as", adapter)
-        self.assertIn("the source of truth", adapter)
-        self.assertIn("do not edit", adapter)
-        self.assertIn("/tmp/openwiki-source", adapter)
+        self.assertIn("--wiki-root", adapter)
+        self.assertIn("(_APP_DIR / 'openwiki').as_posix()", adapter)
+        self.assertIn("ensureCodeModeRepoSetup", adapter)
+        self.assertIn("/logs/agent/openwiki-agents.md", adapter)
+        self.assertIn("await super().run(instruction, environment, context)", adapter)
+        self.assertNotIn("treatment_instruction", adapter)
+        self.assertIn("':(exclude)AGENTS.md'", adapter)
+        self.assertIn("':(exclude)openwiki/**'", adapter)
 
     def test_eval_defaults_use_terra_without_changing_openwiki_defaults(self) -> None:
         args = deepswe_run.parse_args(["paired"])
@@ -124,6 +138,7 @@ class DeepSWEHarnessTests(unittest.TestCase):
             "--env",
             "--n-attempts",
             "--n-concurrent",
+            "--agent-setup-timeout-multiplier",
             "--n-tasks",
             "--include-task-name",
         ):
@@ -133,11 +148,20 @@ class DeepSWEHarnessTests(unittest.TestCase):
         self.assertIn("openwiki_codex:BaselineCodex", baseline)
         self.assertIn("openwiki_codex:OpenWikiCodex", treatment)
         self.assertEqual(2, baseline.count("--agent-kwarg"))
-        self.assertEqual(6, treatment.count("--agent-kwarg"))
+        self.assertEqual(9, treatment.count("--agent-kwarg"))
         self.assertIn("retrieval_embedding_provider=local", treatment)
+        self.assertIn(
+            f"openwiki_cache_dir={args.openwiki_cache_dir.resolve()}", treatment
+        )
+        self.assertIn("reuse_compatible_wiki_cache=true", treatment)
+        self.assertIn("require_openwiki_cache=false", treatment)
         self.assertIn(f"version={deepswe_run.CODEX_VERSION}", baseline)
         self.assertIn("gateway.smith.langchain.com", baseline)
         self.assertIn("api.smith.langchain.com", baseline)
+        self.assertEqual(
+            "3.0",
+            baseline[baseline.index("--agent-setup-timeout-multiplier") + 1],
+        )
         self.assertEqual(1, baseline.count("--plugin"))
         self.assertEqual(
             "deepswe_langsmith:DeepSWELangSmithPlugin",
@@ -160,6 +184,121 @@ class DeepSWEHarnessTests(unittest.TestCase):
         for host in deepswe_run.DEFAULT_ALLOWED_HOSTS:
             self.assertIn(host, baseline)
             self.assertIn(host, treatment)
+
+    def test_custom_agent_setup_timeout_multiplier_is_forwarded(self) -> None:
+        args = deepswe_run.parse_args(
+            ["baseline", "--agent-setup-timeout-multiplier", "4.5"]
+        )
+        command = deepswe_run.harbor_args(args, condition="baseline")
+
+        self.assertEqual(
+            "4.5",
+            command[command.index("--agent-setup-timeout-multiplier") + 1],
+        )
+
+    def test_openwiki_cache_key_is_stable_and_configuration_sensitive(self) -> None:
+        commit = "a" * 40
+        first = openwiki_codex._wiki_cache_key(commit, "b" * 64, "model-a")
+        self.assertEqual(
+            first, openwiki_codex._wiki_cache_key(commit, "b" * 64, "model-a")
+        )
+        self.assertNotEqual(
+            first, openwiki_codex._wiki_cache_key(commit, "b" * 64, "model-b")
+        )
+
+    def test_wiki_cache_archive_accepts_only_contained_regular_content(self) -> None:
+        def write_archive(path: Path, entries: list[tuple[str, bytes, str]]) -> None:
+            with tarfile.open(path, mode="w:gz") as archive:
+                for name, content, kind in entries:
+                    info = tarfile.TarInfo(name)
+                    if kind == "file":
+                        info.size = len(content)
+                        archive.addfile(info, io.BytesIO(content))
+                    elif kind == "dir":
+                        info.type = tarfile.DIRTYPE
+                        archive.addfile(info)
+                    else:
+                        info.type = tarfile.SYMTYPE
+                        info.linkname = "../outside"
+                        archive.addfile(info)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            valid = root / "valid.tgz"
+            write_archive(
+                valid,
+                [
+                    ("openwiki", b"", "dir"),
+                    ("openwiki/quickstart.md", b"# Quickstart\n", "file"),
+                ],
+            )
+            openwiki_codex._validate_wiki_cache_archive(valid)
+
+            invalid_entries = {
+                "absolute": [("/openwiki/quickstart.md", b"x", "file")],
+                "traversal": [("openwiki/../outside", b"x", "file")],
+                "outside": [("outside.txt", b"x", "file")],
+                "symlink": [
+                    ("openwiki/quickstart.md", b"", "symlink"),
+                ],
+                "missing": [("openwiki/overview.md", b"x", "file")],
+            }
+            for label, entries in invalid_entries.items():
+                archive_path = root / f"{label}.tgz"
+                write_archive(archive_path, entries)
+                with self.subTest(label=label), self.assertRaises(ValueError):
+                    openwiki_codex._validate_wiki_cache_archive(archive_path)
+
+    def test_compatible_cache_requires_exact_commit_and_model_metadata(self) -> None:
+        def write_cache(path: Path, commit: str, model: str) -> None:
+            metadata = json.dumps({"gitHead": commit, "model": model}).encode()
+            with tarfile.open(path, mode="w:gz") as archive:
+                for name, content in (
+                    ("openwiki/quickstart.md", b"# Quickstart\n"),
+                    ("openwiki/.last-update.json", metadata),
+                ):
+                    info = tarfile.TarInfo(name)
+                    info.size = len(content)
+                    archive.addfile(info, io.BytesIO(content))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_dir = Path(temp_dir)
+            compatible = cache_dir / "old-package.tgz"
+            exact = cache_dir / "new-package.tgz"
+            commit = "a" * 40
+            write_cache(compatible, commit, "model-a")
+
+            selected, match = openwiki_codex._find_wiki_cache(
+                cache_dir,
+                exact,
+                base_commit=commit,
+                model="model-a",
+                reuse_compatible=True,
+            )
+            self.assertEqual(compatible, selected)
+            self.assertEqual("compatible", match)
+
+            selected, match = openwiki_codex._find_wiki_cache(
+                cache_dir,
+                exact,
+                base_commit=commit,
+                model="model-b",
+                reuse_compatible=True,
+            )
+            self.assertIsNone(selected)
+            self.assertIsNone(match)
+
+    def test_cache_only_cli_flags_are_forwarded(self) -> None:
+        args = deepswe_run.parse_args(
+            ["openwiki", "--require-openwiki-cache", "--dry-run"]
+        )
+        command = deepswe_run.harbor_args(
+            args,
+            condition="openwiki",
+            package_path=args.artifacts_dir / "openwiki-eval.tgz",
+        )
+        self.assertIn("reuse_compatible_wiki_cache=true", command)
+        self.assertIn("require_openwiki_cache=true", command)
 
     def test_custom_allowed_host_is_validated_and_included(self) -> None:
         args = deepswe_run.parse_args(
@@ -384,13 +523,20 @@ class DeepSWEHarnessTests(unittest.TestCase):
     def test_named_task_suites_are_independent_and_composable(self) -> None:
         koota = deepswe_run.TASK_SUITES["koota-5"]
         stress = deepswe_run.WIKI_STRESS_15_TASKS
+        doc_leverage = deepswe_run.TASK_SUITES["openwiki-doc-leverage-10"]
         combined = deepswe_run.TASK_SUITES["openwiki-20"]
 
-        self.assertEqual({"koota-5", "openwiki-20"}, set(deepswe_run.TASK_SUITES))
+        self.assertEqual(
+            {"koota-5", "openwiki-20", "openwiki-doc-leverage-10"},
+            set(deepswe_run.TASK_SUITES),
+        )
         self.assertEqual(5, len(koota))
         self.assertEqual(15, len(stress))
+        self.assertEqual(10, len(doc_leverage))
         self.assertEqual(20, len(combined))
         self.assertTrue(set(koota).isdisjoint(stress))
+        self.assertTrue(set(doc_leverage).isdisjoint(combined))
+        self.assertEqual(len(doc_leverage), len(set(doc_leverage)))
         self.assertEqual((*koota, *stress), combined)
 
     def test_named_task_suite_selects_every_exact_member(self) -> None:

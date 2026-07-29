@@ -126,19 +126,13 @@ function createCodeModeAgentsSnippet(): string {
 
 ## OpenWiki
 
-This repository uses OpenWiki for recurring code documentation. Use \`openwiki/\` as a just-in-time repository index:
+This repository has a generated \`openwiki/\` evidence index. It is optional just-in-time context, not required startup reading.
 
-- At task start, read \`openwiki/quickstart.md\`, then search the wiki for the task's concepts and read only the relevant linked sections.
-- Before a repository-wide \`rg\`, \`find\`, or exploratory directory scan, check the wiki's source maps. When they name relevant files, symbols, or tests, inspect those paths directly.
-- Re-consult the wiki when entering a different subsystem, when source evidence contradicts the current understanding, or when blocked by an unfamiliar test or build failure. Do not reread content already returned by retrieval unless surrounding context is needed.
-- Treat source code and tests as authoritative. Verify wiki claims in source before editing.
-- Before finishing a public API or cross-package change, trace it from implementation through barrel/package exports, generated or publish mirrors, initialization or registration, and the import path consumers actually use. Consult the relevant wiki integration or delivery guidance and run the narrowest consumer-facing check; internal unit tests alone do not prove the shipped surface works.
-- If an \`openwiki_retrieval\` MCP server is available, use \`search\` for focused retrieval. Use \`change_surface\` before public, cross-package, generated-artifact, or runtime-registration edits. After changing public symbols, call \`trace_symbols\` once with all of them and treat missing groups as verification gaps, not automatic requirements.
-- Before editing stateful or lifecycle behavior, write a compact state model: list every identity axis that partitions state (such as tracker/factory, entity, relation or predicate, and target), define the relevant transitions and observation/reset window, and choose one canonical owner or ledger for those transitions. Turn each externally observable criterion into an input/event/expected-result oracle row. Cover relevant initial state, false-to-true and true-to-false transitions, unchanged updates, missing dependencies, independent instances, reset/reuse, deferred or re-entrant net effects, and static-plus-temporal composition; map every row to a passing focused test before finishing.
-- When behavior is unfamiliar, relevant tests are large, or no analogous focused check is known, call \`search\` with the \`tests\` scope using that behavior matrix, then inspect the cited tests directly. Skip this search when the exact focused test is already known.
-- When the repository generates or copies package artifacts, identify the canonical source and repository-supported synchronization command. Do not hand-edit derived output unless the documented workflow explicitly requires it.
-- Do not read operations, release, or integration pages unless the task affects those areas. If a requested feature does not exist yet, use the wiki to locate extension points, then inspect source rather than searching the wiki for the implementation.
-- Prefer the narrowest quiet validation command available. Suppress successful build/test noise when possible, but preserve complete failure output.
+- If implementation ownership, behavioral invariants, analogous tests, or shipped surfaces are unclear, call \`openwiki_retrieval.change_surface\` once with the task before broad exploration. Inspect its cited source and tests directly; do not reread the returned wiki pages.
+- Use \`openwiki_retrieval.search\` only for a concrete unresolved evidence gap. Reconsult when source contradicts the brief, work enters an uncited subsystem, or an unfamiliar failure reveals a missing contract.
+- Treat source code and tests as authoritative. A brief's unknowns and review items are verification gaps, not automatic requirements.
+- Before finishing a public or cross-package change, call \`change_surface\` with the task and the repository-relative changed paths. Verify relevant flagged exports, registration, generated surfaces, consumer paths, and focused tests.
+- Prefer the narrowest quiet validation that proves the changed behavior. Preserve complete failure output.
 
 The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
 

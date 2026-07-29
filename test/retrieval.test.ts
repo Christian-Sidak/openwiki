@@ -6,6 +6,7 @@ import {
   RETRIEVAL_TOOL_DEFINITIONS,
   SEARCH_SCOPES,
 } from "../src/retrieval/mcp-tools.ts";
+import { tokenize } from "../src/retrieval/ranking.ts";
 import { RetrievalService } from "../src/retrieval/search-service.ts";
 
 let root = "";
@@ -18,7 +19,9 @@ beforeEach(async () => {
   wikiRoot = path.join(root, "wiki");
   await Promise.all([
     mkdir(path.join(repoRoot, "packages/core/src/query"), { recursive: true }),
-    mkdir(path.join(repoRoot, "packages/core/src/relation"), { recursive: true }),
+    mkdir(path.join(repoRoot, "packages/core/src/relation"), {
+      recursive: true,
+    }),
     mkdir(path.join(repoRoot, "packages/core/tests"), { recursive: true }),
     mkdir(path.join(repoRoot, "packages/publish/src"), { recursive: true }),
     mkdir(path.join(repoRoot, "packages/publish/tests"), { recursive: true }),
@@ -47,6 +50,18 @@ type: Architecture
 title: Query runtime and package contract
 description: Connects predicate implementation to public exports and consumer tests.
 tags: [query, package, runtime]
+openwiki:
+  roles: [architecture, testing, delivery]
+  change_kinds: [public-api, lifecycle]
+  source_paths:
+    - packages/core/src/query/predicate.ts
+    - packages/core/src/index.ts
+    - packages/publish/src/index.ts
+  symbols: [createPredicate]
+  test_paths: [packages/core/tests/predicate.test.ts]
+  invariants:
+    - Predicate transitions must remain independent between instances.
+  validation_commands: [pnpm -F core test predicate.test.ts]
 ---
 
 # Query runtime
@@ -55,6 +70,9 @@ Implement predicates in \`packages/core/src/query/predicate.ts\`, export them fr
 \`packages/core/src/index.ts\`, mirror the public surface through
 \`packages/publish/src/index.ts\`, and validate consumer imports in
 \`packages/publish/tests/predicate.test.ts\`.
+
+Unchanged predicate inputs must not emit a transition. Public exports must remain
+available from the consumer package.
 
 The [quickstart](../quickstart.md) routes adjacent changes here.
 `,
@@ -84,6 +102,14 @@ The [quickstart](../quickstart.md) routes adjacent changes here.
       "import { createPredicate } from 'koota';\ndescribe('predicate lifecycle', () => {\n  test('tracks false-to-true transitions independently', () => createPredicate());\n});\n",
     ),
     writeFile(
+      path.join(repoRoot, "AGENTS.md"),
+      "Public API exports initialize register factory predicate relation removal tests.\n",
+    ),
+    writeFile(
+      path.join(repoRoot, "packages/core/tests/unrelated.test.ts"),
+      "test('generic public package initialization', () => true);\n",
+    ),
+    writeFile(
       path.join(repoRoot, ".env"),
       "SECRET_PREDICATE_SURFACE=never-index-this\n",
     ),
@@ -107,11 +133,10 @@ function service(): RetrievalService {
 }
 
 describe("OKF-aware repository retrieval", () => {
-  test("exposes three concise workflow-oriented MCP tools", () => {
+  test("exposes two concise workflow-oriented MCP tools", () => {
     expect(RETRIEVAL_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([
       "search",
       "change_surface",
-      "trace_symbols",
     ]);
     expect(
       RETRIEVAL_TOOL_DEFINITIONS.every(
@@ -142,6 +167,25 @@ describe("OKF-aware repository retrieval", () => {
           hit.path.includes("runtime.md") || hit.path.includes("publish"),
       ),
     ).toBe(true);
+  });
+
+  test("matches snake and kebab compounds to camel-case source symbols", async () => {
+    expect(tokenize("name_mapping HttpApi http-api")).toEqual([
+      "name",
+      "mapp",
+      "http",
+      "api",
+      "http",
+      "api",
+    ]);
+    await writeFile(
+      path.join(repoRoot, "packages/core/src/query/NameMapping.ts"),
+      "export class NameMapping {}\n",
+    );
+
+    const result = await service().search("name_mapping", "source_code", 5);
+
+    expect(result.results[0]?.path).toContain("NameMapping.ts");
   });
 
   test("supports distinct wiki, source_code, and tests scopes", async () => {
@@ -181,66 +225,96 @@ describe("OKF-aware repository retrieval", () => {
     expect(result.results.length).toBeLessThanOrEqual(10);
   });
 
-  test("change_surface groups cross-package evidence", async () => {
+  test("change_surface returns a bounded metadata-routed task brief", async () => {
     const surface = await service().changeSurface(
       "add createPredicate query API and track relation removal events",
       7,
     );
 
-    expect(surface.relatedConcepts[0]?.path).toContain("openwiki/");
-    expect(surface.groups.implementation.length).toBeGreaterThan(0);
-    expect(surface.groups.state_transitions[0]?.path).toContain("relation");
-    expect(surface.groups.exports.length).toBeGreaterThan(0);
-    expect(surface.groups.publish_generated.length).toBeGreaterThan(0);
-    expect(surface.groups.consumer.length).toBeGreaterThan(0);
-    expect(surface.groups.tests.length).toBeGreaterThan(0);
-    const results = Object.values(surface.groups).flat();
-    expect(results).toHaveLength(7);
-    expect(surface.relatedConcepts.length).toBeLessThanOrEqual(2);
-    expect(
-      Math.max(...results.map((result) => result.snippet.length)),
-    ).toBeLessThanOrEqual(220);
+    expect(surface.brief.ownership[0]?.path).toContain("predicate.ts");
+    expect(surface.brief.ownership[0]?.reason).toContain("OpenWiki");
+    expect(surface.brief.invariants.map((item) => item.text).join(" ")).toMatch(
+      /independent|unchanged/iu,
+    );
+    expect(surface.brief.tests[0]?.path).toContain("predicate.test.ts");
+    expect(surface.brief.tests[0]?.testNames).toContain(
+      "tracks false-to-true transitions independently",
+    );
+    expect(surface.brief.delivery.length).toBeGreaterThan(0);
+    expect(surface.brief.validation[0]?.command).toContain("pnpm -F core test");
+    const evidence = [
+      ...surface.brief.ownership,
+      ...surface.brief.tests,
+      ...surface.brief.delivery,
+    ];
+    expect(evidence.every((result) => result.path !== "AGENTS.md")).toBe(true);
+    expect(surface.provenance.wikiConceptPaths).toContain(
+      "openwiki/architecture/runtime.md",
+    );
+    expect(surface.provenance.metadataRoles).toContain("delivery");
+    expect(surface.provenance.wikiReferencedSourcePaths).toContain(
+      "packages/core/src/query/predicate.ts",
+    );
     expect(JSON.stringify(surface).length).toBeLessThan(5_000);
   });
 
-  test("trace_symbols reindexes once and accepts batched dotted symbols", async () => {
-    const retrieval = service();
-    await retrieval.search("createMatcher", "source_code", 5);
-    await writeFile(
-      path.join(repoRoot, "packages/core/src/query/matcher.ts"),
-      "export function createMatcher() { return true; }\nexport const Entity = { changed() { return true; } };\n",
+  test("change_surface reviews changed paths without treating gaps as requirements", async () => {
+    const surface = await service().changeSurface(
+      "add a public createPredicate API",
+      6,
+      ["packages/core/src/query/predicate.ts"],
     );
 
-    const response = await retrieval.traceSymbols(
-      [
-        "createMatcher",
-        "Entity.changed",
-        "PUBLIC_PREDICATE_FACTORY",
-        "createMatcher",
-      ],
-      50,
-    );
-    const trace = response.traces[0];
-
-    expect(trace.groups.implementation[0]?.path).toContain("matcher.ts");
-    expect(trace.missing).toContain("consumer");
-    expect(trace.missing).toContain("tests");
-    expect(trace.missing).toContain("exports");
-    expect(Object.values(trace.groups).flat()).toHaveLength(1);
-    expect(response.traces.map((item) => item.symbol)).toEqual([
-      "createMatcher",
-      "Entity.changed",
-      "PUBLIC_PREDICATE_FACTORY",
+    expect(surface.provenance.changedPaths).toEqual([
+      "packages/core/src/query/predicate.ts",
     ]);
-    expect(response.traces[1]?.groups.implementation[0]?.path).toContain(
-      "matcher.ts",
+    expect(surface.review?.some((item) => item.path.includes("index.ts"))).toBe(
+      true,
     );
-    expect(response.traces[2]?.groups.implementation[0]?.path).toContain(
-      "predicate.ts",
-    );
+    expect(
+      surface.review?.every((item) => item.reason.includes("verify")),
+    ).toBe(true);
     await expect(
-      retrieval.traceSymbols(["createMatcher(); rm -rf /"], 6),
-    ).rejects.toThrow("plain or dotted identifier");
+      service().changeSurface("public API", 6, ["../.env"]),
+    ).rejects.toThrow("safe repository-relative paths");
+  });
+
+  test("weak wiki matches do not invent invariants or symbol ownership", async () => {
+    await Promise.all([
+      writeFile(
+        path.join(wikiRoot, "architecture/noisy-routing.md"),
+        `---
+type: Architecture
+title: Metadata routing notes
+description: Notes about OKF metadata routing and retrieval briefs.
+tags: [okf, metadata, retrieval]
+---
+
+# Metadata routing notes
+
+Personal reminders should not be mixed into work commitments. The unrelated
+example helper is \`wrongOwner\`.
+`,
+      ),
+      writeFile(
+        path.join(repoRoot, "packages/core/src/query/metadata-router.ts"),
+        "export function routeOkfMetadataRetrievalBrief() { return true; }\n",
+      ),
+      writeFile(
+        path.join(repoRoot, "packages/core/src/relation/wrong-owner.ts"),
+        "export function wrongOwner() { return wrongOwner; }\n",
+      ),
+    ]);
+
+    const surface = await service().changeSurface(
+      "improve OKF metadata routing retrieval briefs",
+    );
+
+    expect(surface.brief.ownership[0]?.path).toContain("metadata-router.ts");
+    expect(surface.brief.invariants).toEqual([]);
+    expect(surface.brief.unknowns).toContain(
+      "No explicit behavioral invariant was found in the wiki.",
+    );
   });
 
   test("never indexes secret-like files", async () => {
@@ -250,7 +324,14 @@ describe("OKF-aware repository retrieval", () => {
       50,
     );
 
-    expect(result.results).toEqual([]);
+    expect(
+      result.results.every(
+        (hit) => !/\.env|credentials\.json|secrets\//u.test(hit.path),
+      ),
+    ).toBe(true);
+    expect(result.results.map((hit) => hit.snippet).join("\n")).not.toContain(
+      "never-index-this",
+    );
   });
 
   test("bounds query length", async () => {

@@ -43,19 +43,16 @@ describe("ensureCodeModeRepoSetup agent files", () => {
       expect(content).toContain(SNIPPET_START);
       expect(content).toContain(SNIPPET_END);
       expect(content).toContain("## OpenWiki");
-      expect(content).toContain("just-in-time repository index");
-      expect(content).toContain("Before a repository-wide");
-      expect(content).toContain("Re-consult the wiki");
-      expect(content).toContain("import path consumers actually use");
-      expect(content).toContain("internal unit tests alone");
-      expect(content).toContain("trace_symbols");
-      expect(content).toContain("every identity axis");
-      expect(content).toContain("canonical owner or ledger");
-      expect(content).toContain("input/event/expected-result oracle row");
-      expect(content).toContain("independent instances");
-      expect(content).toContain("deferred or re-entrant net effects");
-      expect(content).toContain("\`tests\` scope");
+      expect(content).toContain("optional just-in-time context");
+      expect(content).toContain("not required startup reading");
+      expect(content).toContain("openwiki_retrieval.change_surface");
+      expect(content).toContain("do not reread the returned wiki pages");
+      expect(content).toContain("concrete unresolved evidence gap");
+      expect(content).toContain("repository-relative changed paths");
+      expect(content).toContain("verification gaps");
+      expect(content).not.toContain("trace_symbols");
       expect(content).toContain("quiet validation");
+      expect(content.length).toBeLessThan(2_500);
     }
   });
 

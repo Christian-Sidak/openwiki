@@ -4,8 +4,30 @@ export type IndexedScope = "source_code" | "wiki";
 
 export type ChunkKind = "source" | "wiki-section";
 
+export type DocumentRole =
+  | "architecture"
+  | "delivery"
+  | "domain"
+  | "integration"
+  | "operations"
+  | "reference"
+  | "repository"
+  | "testing"
+  | "workflow";
+
+export interface OpenWikiMetadata {
+  changeKinds: string[];
+  invariants: string[];
+  roles: DocumentRole[];
+  sourcePaths: string[];
+  symbols: string[];
+  testPaths: string[];
+  validationCommands: string[];
+}
+
 export interface IndexedChunk {
   conceptPath?: string;
+  description?: string;
   fields: string;
   heading?: string;
   id: string;
@@ -13,6 +35,8 @@ export interface IndexedChunk {
   lineEnd: number;
   lineStart: number;
   path: string;
+  resource?: string;
+  roles: DocumentRole[];
   scope: IndexedScope;
   tags: string[];
   testNames?: string[];
@@ -23,15 +47,18 @@ export interface IndexedChunk {
 
 export interface OkfRelationship {
   context: string;
+  kind: "dependency" | "delivery" | "lifecycle" | "navigation" | "related";
   target: string;
 }
 
 export interface OkfConcept {
   description?: string;
   incoming: Set<string>;
+  metadata: OpenWikiMetadata;
   path: string;
   relationships: OkfRelationship[];
   resource?: string;
+  roles: DocumentRole[];
   tags: string[];
   title: string;
   type: string;
@@ -66,7 +93,7 @@ export interface SearchResponse {
   scope: SearchScope;
 }
 
-export type SymbolTraceCategory =
+export type SourceSurfaceCategory =
   | "consumer"
   | "exports"
   | "implementation"
@@ -74,22 +101,54 @@ export type SymbolTraceCategory =
   | "publish_generated"
   | "tests";
 
-export type ChangeSurfaceCategory =
-  | SymbolTraceCategory
-  | "state_transitions";
+export type ChangeSurfaceCategory = SourceSurfaceCategory | "state_transitions";
+
+export interface EvidenceReference {
+  lineEnd: number;
+  lineStart: number;
+  path: string;
+  reason: string;
+  symbols?: string[];
+  testNames?: string[];
+  title?: string;
+}
+
+export interface ChangeSurfaceProvenance {
+  changedPaths: string[];
+  metadataRoles: DocumentRole[];
+  wikiConceptPaths: string[];
+  wikiReferencedSourcePaths: string[];
+}
+
+export interface BriefInvariant {
+  lineEnd: number;
+  lineStart: number;
+  path: string;
+  text: string;
+}
+
+export interface ValidationReference {
+  command: string;
+  path: string;
+}
+
+export interface CoverageReviewItem {
+  path: string;
+  reason: string;
+}
+
+export interface ChangeSurfaceBrief {
+  delivery: EvidenceReference[];
+  invariants: BriefInvariant[];
+  ownership: EvidenceReference[];
+  tests: EvidenceReference[];
+  unknowns: string[];
+  validation: ValidationReference[];
+}
 
 export interface ChangeSurfaceResponse {
-  groups: Record<ChangeSurfaceCategory, SearchResultItem[]>;
+  brief: ChangeSurfaceBrief;
+  provenance: ChangeSurfaceProvenance;
   query: string;
-  relatedConcepts: SearchResultItem[];
-}
-
-export interface SymbolTraceResult {
-  groups: Record<SymbolTraceCategory, SearchResultItem[]>;
-  missing: SymbolTraceCategory[];
-  symbol: string;
-}
-
-export interface SymbolTraceResponse {
-  traces: SymbolTraceResult[];
+  review?: CoverageReviewItem[];
 }

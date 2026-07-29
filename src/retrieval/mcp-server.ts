@@ -41,7 +41,7 @@ async function handleLine(line: string): Promise<void> {
         writeResult(request.id, {
           capabilities: { tools: { listChanged: false } },
           instructions:
-            "Use search for focused wiki, source_code, or tests retrieval. Use change_surface before public or cross-package edits, and trace_symbols once after changing public symbols. Verify citations in source. All tools are read-only and return bounded excerpts.",
+            "Use change_surface when ownership, invariants, analogous tests, or shipped surfaces are unclear. Inspect its citations directly instead of rereading wiki pages. Reuse it with changed_paths for a final cross-surface review. Use search only for a concrete unresolved evidence gap.",
           protocolVersion: "2025-06-18",
           serverInfo: { name: "openwiki-retrieval", version: OPENWIKI_VERSION },
         });
@@ -88,12 +88,7 @@ async function callTool(
       result = await service.changeSurface(
         requiredString(args.query, "query"),
         optionalInteger(args.limit, 6),
-      );
-      break;
-    case "trace_symbols":
-      result = await service.traceSymbols(
-        requiredStrings(args.symbols, "symbols"),
-        optionalInteger(args.limit, 4),
+        optionalStringArray(args.changed_paths, "changed_paths"),
       );
       break;
     default:
@@ -138,20 +133,6 @@ function requiredString(value: unknown, name: string): string {
   return value;
 }
 
-function requiredStrings(value: unknown, name: string): string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${name} must be a non-empty string array.`);
-  }
-  const strings: string[] = [];
-  for (const item of value) {
-    if (typeof item !== "string" || !item.trim()) {
-      throw new Error(`${name} must be a non-empty string array.`);
-    }
-    strings.push(item);
-  }
-  return strings;
-}
-
 function optionalInteger(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value)
     ? value
@@ -165,6 +146,21 @@ function optionalScope(value: unknown): SearchScope {
     value === "all"
     ? value
     : "all";
+}
+
+function optionalStringArray(value: unknown, name: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${name} must be an array of strings.`);
+  }
+  const result: string[] = [];
+  for (const item of value as unknown[]) {
+    if (typeof item !== "string") {
+      throw new Error(`${name} must be an array of strings.`);
+    }
+    result.push(item);
+  }
+  return result;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

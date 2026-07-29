@@ -59,12 +59,13 @@ const SYNONYMS = buildSynonyms();
 
 export function tokenize(value: string): string[] {
   const separated = value
+    .replace(/[_-]+/gu, " ")
     .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/gu, "$1 $2")
     .toLowerCase();
-  const terms = separated.match(/[a-z0-9][a-z0-9_-]*/gu) ?? [];
+  const terms = separated.match(/[a-z0-9]+/gu) ?? [];
   return terms
-    .map((term) => stem(term.replace(/[_-]+/gu, "")))
+    .map((term) => stem(term))
     .filter((term) => term.length > 1 && !STOP_WORDS.has(term));
 }
 
@@ -198,8 +199,11 @@ export function searchableText(chunk: IndexedChunk): string {
     chunk.path,
     chunk.title,
     chunk.heading,
+    chunk.description,
     chunk.type,
+    chunk.roles.join(" "),
     chunk.tags.join(" "),
+    chunk.resource,
     chunk.fields,
     chunk.text,
   ]

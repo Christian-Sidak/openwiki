@@ -43,7 +43,7 @@ function tool(
 export const RETRIEVAL_TOOL_DEFINITIONS = [
   tool(
     "search",
-    "Search the wiki, implementation code, or tests with automatic exact, lexical, semantic, and OKF ranking. Use the tests scope only when analogous behavior is needed, and inspect cited source before relying on it.",
+    "Retrieve focused wiki guidance, implementation evidence, or analogous tests with automatic lexical, semantic, and OKF ranking. Use wiki for contracts and invariants; verify every citation in source.",
     querySchema({
       limit: integerSchema(1, 10, 5),
       scope: {
@@ -57,25 +57,16 @@ export const RETRIEVAL_TOOL_DEFINITIONS = [
   ),
   tool(
     "change_surface",
-    "Map a public, stateful, or cross-package change before editing. Returns compact citations for implementation, state-transition producers, exports, publish mirrors, initialization, consumers, and tests.",
-    querySchema({ limit: integerSchema(1, 12, 7) }),
-  ),
-  tool(
-    "trace_symbols",
-    "After editing public symbols, re-index once and verify them together across implementation, exports, generated/publish mirrors, initialization, consumers, and tests. Missing groups are verification gaps, not automatic requirements.",
-    {
-      additionalProperties: false,
-      properties: {
-        limit: integerSchema(1, 6, 4),
-        symbols: {
-          items: { maxLength: 200, minLength: 1, type: "string" },
-          maxItems: 12,
-          minItems: 1,
-          type: "array",
-        },
+    "Build a compact, evidence-backed task brief before broad exploration: likely owners, invariants, analogous tests, conditional delivery surfaces, and narrow validation. Pass changed_paths later to review documented adjacent surfaces.",
+    querySchema({
+      changed_paths: {
+        description:
+          "Optional repository-relative paths already changed. When present, the response flags documented adjacent surfaces to verify; flags are evidence gaps, not automatic requirements.",
+        items: { maxLength: 300, minLength: 1, type: "string" },
+        maxItems: 50,
+        type: "array",
       },
-      required: ["symbols"],
-      type: "object",
-    },
+      limit: integerSchema(1, 8, 6),
+    }),
   ),
 ] as const satisfies readonly ToolDefinition[];

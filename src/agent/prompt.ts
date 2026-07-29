@@ -170,6 +170,21 @@ timestamp: <Optional ISO 8601 datetime>
 - Produce valid YAML. Do not leave placeholder text or explanatory comments in written files.
 - Preserve all existing producer-defined front matter fields when updating a concept. Unknown extension fields are valid OKF and must survive round trips. Change metadata only when the underlying fact or meaningful content changes.
 - The description field is especially useful for retrieval tools. When present, make it clear, detailed, and optimized for search.
+- In repository mode, use the optional namespaced \`openwiki\` producer extension when source evidence supports it. Keep values concise and omit empty keys:
+
+<openwiki_extension>
+openwiki:
+  roles: [architecture, domain] # One or more of architecture, delivery, domain, integration, operations, repository, testing, workflow
+  change_kinds: [lifecycle, public-api] # Short kebab-case routing facets
+  source_paths: [path/to/canonical-source.ts]
+  symbols: [PublicSymbol, owningInternalSymbol]
+  test_paths: [path/to/focused.test.ts]
+  invariants: [A concise externally observable contract.]
+  validation_commands: [the narrowest non-destructive check]
+</openwiki_extension>
+
+- Use \`type\` as a free-form human concept kind. Use \`openwiki.roles\` for stable retrieval roles and \`tags\` for specific domain facets; do not use generic shared tags as a substitute for explicit concept links.
+- Treat \`source_paths\`, \`test_paths\`, invariants, and validation commands as evidence-backed routing metadata, not exhaustive requirements. Never place secrets, credentials, or commands that expose them in metadata.
 - When updating an existing Markdown concept, preserve accurate body content and correct its opening front matter only when needed for compliance or accuracy.
 - OpenWiki repairs front matter deterministically after every run, so a page is never rejected for missing or invalid front matter. If a page's front matter contains \`openwiki_generated: true\`, that metadata was code-derived as a fallback: replace it with an accurate \`type\`, \`title\`, and \`description\` grounded in the page body, then remove the \`openwiki_generated\` field.
 

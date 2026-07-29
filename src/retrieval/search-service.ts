@@ -7,47 +7,32 @@ import {
 } from "./ranking.js";
 import { SemanticRanker, type EmbeddingProvider } from "./semantic.js";
 import type {
-  ChangeSurfaceCategory,
+  BriefInvariant,
   ChangeSurfaceResponse,
+  CoverageReviewItem,
+  DocumentRole,
+  EvidenceReference,
   IndexedChunk,
   OkfConcept,
+  OpenWikiMetadata,
   RankedHit,
   RepositoryCorpus,
   SearchResponse,
   SearchResultItem,
   SearchScope,
-  SymbolTraceCategory,
-  SymbolTraceResult,
-  SymbolTraceResponse,
+  SourceSurfaceCategory,
+  ValidationReference,
 } from "./types.js";
 
 const DEFAULT_LIMIT = 6;
 const MAX_SEARCH_LIMIT = 10;
-const MAX_SURFACE_LIMIT = 12;
-const MAX_TRACE_LIMIT = 6;
-const MAX_SYMBOLS = 12;
+const MAX_SURFACE_LIMIT = 8;
 const MAX_QUERY_LENGTH = 500;
-const MAX_RELATED_CONCEPTS = 2;
 const MAX_SNIPPET_LENGTH = 220;
-const DOTTED_IDENTIFIER =
-  /^[A-Za-z_$][A-Za-z0-9_$]{0,99}(?:\.[A-Za-z_$][A-Za-z0-9_$]{0,99}){0,5}$/u;
-const TRACE_CATEGORY_ORDER: SymbolTraceCategory[] = [
-  "implementation",
-  "exports",
-  "publish_generated",
-  "initialization",
-  "consumer",
-  "tests",
-];
-const CHANGE_SURFACE_CATEGORY_ORDER: ChangeSurfaceCategory[] = [
-  "implementation",
-  "state_transitions",
-  "exports",
-  "publish_generated",
-  "initialization",
-  "consumer",
-  "tests",
-];
+const MAX_CHANGED_PATHS = 50;
+const MAX_CONCEPTS = 3;
+const MAX_INVARIANTS = 4;
+const MAX_VALIDATION_COMMANDS = 3;
 
 export interface RetrievalServiceOptions {
   embeddingProvider: EmbeddingProvider;
@@ -96,70 +81,150 @@ export class RetrievalService {
 
   async changeSurface(
     query: string,
-    limit = 7,
+    limit = 6,
+    changedPaths: string[] = [],
   ): Promise<ChangeSurfaceResponse> {
     const corpus = await this.corpus();
     const validQuery = validateQuery(query);
     const validLimit = normalizeLimit(limit, MAX_SURFACE_LIMIT, 6);
-    const concepts = await this.search(validQuery, "wiki", validLimit);
-    const conceptChunks = conceptHits(corpus.chunks, concepts.results);
-    const referencedPaths = extractPaths(
-      conceptChunks.map((chunk) => chunk.text).join("\n"),
+    const validChangedPaths = validateChangedPaths(changedPaths);
+    const metadataRoles = inferQueryRoles(validQuery);
+    const conceptChunks = selectConceptChunks(
+      corpus,
+      validQuery,
+      metadataRoles,
+      MAX_CONCEPTS,
     );
-    const symbols = extractSymbols(
-      `${validQuery}\n${conceptChunks.map((chunk) => chunk.text).join("\n")}`,
+    const selectedConcepts = selectedOkfConcepts(corpus, conceptChunks);
+    const metadata = mergeMetadata(selectedConcepts);
+    const referencedPaths = new Set([
+      ...extractPaths(conceptChunks.map((chunk) => chunk.text).join("\n")),
+      ...metadata.sourcePaths,
+      ...metadata.testPaths,
+    ]);
+    const symbols = [...new Set(metadata.symbols)];
+    const sourceQuery = [validQuery, ...symbols.slice(0, 10)].join(" ");
+    const sourceCorpus = sourceChunks(corpus.chunks).filter(
+      (chunk) => !isRepositoryGuidance(chunk),
     );
-    const expandedQuery = [validQuery, ...symbols.slice(0, 24)].join(" ");
-    const source = reciprocalRankFusion([
+    const source = boostReferencedPaths(
+      reciprocalRankFusion([
+        {
+          hits: rankBm25(sourceCorpus, sourceQuery),
+          name: "bm25",
+          weight: 1,
+        },
+        {
+          hits: rankKeyword(sourceCorpus, sourceQuery),
+          name: "keyword",
+          weight: 0.9,
+        },
+      ]),
+      referencedPaths,
+    ).slice(0, 120);
+    const invariants = collectInvariants(
+      selectedConcepts,
+      conceptChunks,
+      validQuery,
+    );
+    const ownershipHits = uniquePathHits(
+      source.filter(
+        (hit) =>
+          !isTestChunk(hit.chunk) &&
+          categorize(hit.chunk).includes("implementation"),
+      ),
+    ).slice(0, Math.min(3, validLimit));
+    const deliveryRequested = requiresDeliveryReview(
+      validQuery,
+      metadataRoles,
+      validChangedPaths,
+    );
+    const deliveryHits = deliveryRequested
+      ? uniquePathHits(
+          source.filter((hit) =>
+            categorize(hit.chunk).some((category) =>
+              [
+                "consumer",
+                "exports",
+                "initialization",
+                "publish_generated",
+              ].includes(category),
+            ),
+          ),
+        ).slice(0, 2)
+      : [];
+    const testRankers = [
       {
-        hits: rankBm25(sourceChunks(corpus.chunks), expandedQuery),
-        name: "bm25",
+        hits: rankBm25(sourceCorpus.filter(isTestChunk), validQuery),
+        name: "test_bm25",
+        weight: 1.2,
+      },
+      {
+        hits: rankKeyword(sourceCorpus.filter(isTestChunk), validQuery),
+        name: "test_keyword",
         weight: 1,
       },
-      {
-        hits: boostReferencedPaths(
-          rankKeyword(sourceChunks(corpus.chunks), expandedQuery),
-          referencedPaths,
+    ];
+    if (invariants.length > 0) {
+      testRankers.push({
+        hits: rankBm25(
+          sourceCorpus.filter(isTestChunk),
+          invariants.map((invariant) => invariant.text).join(" "),
         ),
-        name: "wiki_paths",
-        weight: 1.1,
-      },
-    ]).slice(0, 160);
-    const groups = emptyChangeSurfaceGroups();
-    const candidates = emptyChangeSurfaceGroups();
-    for (const hit of source) {
-      for (const category of categorize(hit.chunk)) {
-        candidates[category].push(toResultItem(hit));
-      }
-      if (isStateTransitionProducer(hit.chunk)) {
-        candidates.state_transitions.push(toResultItem(hit));
-      }
+        name: "invariant_bm25",
+        weight: 0.35,
+      });
     }
-    fillGroups(
-      groups,
-      candidates,
-      validLimit,
-      CHANGE_SURFACE_CATEGORY_ORDER,
+    const testHits = uniquePathHits(
+      deduplicateTestMirrors(
+        boostReferencedPaths(
+          reciprocalRankFusion(testRankers),
+          new Set(metadata.testPaths),
+          2.5,
+        ),
+      ),
+    ).slice(0, Math.min(3, validLimit));
+    const ownership = ownershipHits.map((hit) =>
+      toEvidenceReference(hit, ownershipReason(hit.chunk, referencedPaths)),
+    );
+    const tests = testHits.map((hit) =>
+      toEvidenceReference(hit, "Analogous behavior or regression coverage."),
+    );
+    const delivery = deliveryHits.map((hit) =>
+      toEvidenceReference(hit, deliveryReason(hit.chunk)),
+    );
+    const validation = collectValidation(selectedConcepts, conceptChunks);
+    const unknowns = collectUnknowns({
+      delivery,
+      deliveryRequested,
+      invariants,
+      ownership,
+      tests,
+    });
+    const review = buildCoverageReview(
+      validChangedPaths,
+      [...ownership, ...delivery],
+      referencedPaths,
     );
     return {
-      groups,
+      brief: {
+        delivery,
+        invariants,
+        ownership,
+        tests,
+        unknowns,
+        validation,
+      },
+      provenance: {
+        changedPaths: validChangedPaths,
+        metadataRoles,
+        wikiConceptPaths: [
+          ...new Set(conceptChunks.map((chunk) => chunk.path)),
+        ],
+        wikiReferencedSourcePaths: [...referencedPaths],
+      },
       query: validQuery,
-      relatedConcepts: concepts.results.slice(0, MAX_RELATED_CONCEPTS),
-    };
-  }
-
-  async traceSymbols(
-    symbols: string[],
-    limit = 4,
-  ): Promise<SymbolTraceResponse> {
-    const validSymbols = validateSymbols(symbols);
-    const validLimit = normalizeLimit(limit, MAX_TRACE_LIMIT, 4);
-    this.corpusPromise = undefined;
-    const chunks = sourceChunks((await this.corpus()).chunks);
-    return {
-      traces: validSymbols.map((symbol) =>
-        traceSymbol(chunks, symbol, validLimit),
-      ),
+      ...(review.length > 0 ? { review } : {}),
     };
   }
 
@@ -194,7 +259,7 @@ function rankOkfGraph(
       const concept = corpus.concepts.get(conceptPath);
       if (!concept) continue;
       const base = scores.get(conceptPath) ?? 0;
-      for (const neighbor of graphNeighbors(concept, corpus.concepts)) {
+      for (const neighbor of graphNeighbors(concept, query)) {
         scores.set(neighbor, (scores.get(neighbor) ?? 0) + base * 0.35);
         next.add(neighbor);
       }
@@ -210,25 +275,28 @@ function rankOkfGraph(
     .sort((left, right) => right.score - left.score);
 }
 
-function graphNeighbors(
-  concept: OkfConcept,
-  concepts: Map<string, OkfConcept>,
-): Set<string> {
-  const neighbors = new Set([
-    ...concept.relationships.map((relationship) => relationship.target),
-    ...concept.incoming,
+function graphNeighbors(concept: OkfConcept, query: string): Set<string> {
+  const queryTerms = new Set(tokenize(query));
+  const desiredKinds = new Set<OkfConcept["relationships"][number]["kind"]>([
+    "dependency",
+    "lifecycle",
+    "related",
   ]);
-  if (concept.tags.length > 0) {
-    for (const candidate of concepts.values()) {
-      if (
-        candidate.path !== concept.path &&
-        candidate.tags.some((tag) => concept.tags.includes(tag))
-      ) {
-        neighbors.add(candidate.path);
-      }
-    }
+  if (/\b(?:export|package|public|publish|release|ship)\w*\b/iu.test(query)) {
+    desiredKinds.add("delivery");
   }
-  return neighbors;
+  return new Set(
+    concept.relationships
+      .filter(
+        (relationship) =>
+          desiredKinds.has(relationship.kind) &&
+          (relationship.kind !== "related" ||
+            tokenize(relationship.context).some((term) =>
+              queryTerms.has(term),
+            )),
+      )
+      .map((relationship) => relationship.target),
+  );
 }
 
 function bestConceptChunk(
@@ -244,36 +312,475 @@ function bestConceptChunk(
   );
 }
 
-function conceptHits(
-  chunks: IndexedChunk[],
-  results: SearchResultItem[],
+function selectConceptChunks(
+  corpus: RepositoryCorpus,
+  query: string,
+  desiredRoles: DocumentRole[],
+  limit: number,
 ): IndexedChunk[] {
-  const keys = new Set(results.map((item) => `${item.path}:${item.lineStart}`));
-  return chunks.filter((chunk) => keys.has(`${chunk.path}:${chunk.lineStart}`));
+  const wikiChunks = corpus.chunks.filter((chunk) => chunk.scope === "wiki");
+  const representatives = [...corpus.concepts.values()]
+    .map((concept) => {
+      const base = wikiChunks.find(
+        (chunk) => chunk.conceptPath === concept.path,
+      );
+      if (!base) return undefined;
+      return {
+        ...base,
+        fields: [
+          concept.title,
+          concept.type,
+          concept.description,
+          concept.roles.join(" "),
+          concept.tags.join(" "),
+          concept.resource,
+          concept.metadata.changeKinds.join(" "),
+          concept.metadata.sourcePaths.join(" "),
+          concept.metadata.symbols.join(" "),
+          concept.metadata.testPaths.join(" "),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        text: concept.description ?? "",
+      } satisfies IndexedChunk;
+    })
+    .filter((chunk): chunk is IndexedChunk => chunk !== undefined);
+  const relevantRepresentatives = representatives.filter((chunk) =>
+    hasDistinctiveMetadataMatch(chunk, query),
+  );
+  if (relevantRepresentatives.length === 0) return [];
+  const neighborPaths = new Set<string>();
+  for (const seed of rankBm25(relevantRepresentatives, query).slice(0, 4)) {
+    const concept = seed.chunk.conceptPath
+      ? corpus.concepts.get(seed.chunk.conceptPath)
+      : undefined;
+    if (!concept) continue;
+    for (const neighbor of graphNeighbors(concept, query)) {
+      neighborPaths.add(neighbor);
+    }
+  }
+  const ranked = reciprocalRankFusion([
+    {
+      hits: rankBm25(relevantRepresentatives, query),
+      name: "metadata_bm25",
+      weight: 1,
+    },
+    {
+      hits: rankKeyword(relevantRepresentatives, query),
+      name: "metadata_keyword",
+      weight: 0.9,
+    },
+  ])
+    .map((hit) => {
+      const overlap = hit.chunk.roles.filter((role) =>
+        desiredRoles.includes(role),
+      ).length;
+      const repositoryOnly =
+        hit.chunk.roles.includes("repository") &&
+        hit.chunk.roles.every((role) =>
+          ["repository", "reference"].includes(role),
+        );
+      return {
+        ...hit,
+        score:
+          hit.score *
+          (1 + overlap * 0.18) *
+          (neighborPaths.has(hit.chunk.conceptPath ?? "") ? 1.15 : 1) *
+          (repositoryOnly ? 0.65 : 1),
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+  const selected: RankedHit[] = [];
+  const coveredRoles = new Set<DocumentRole>();
+  for (const hit of ranked) {
+    if (selected.length >= limit) break;
+    if (
+      selected.some(
+        (candidate) => candidate.chunk.conceptPath === hit.chunk.conceptPath,
+      )
+    ) {
+      continue;
+    }
+    const addsRole = hit.chunk.roles.some(
+      (role) => desiredRoles.includes(role) && !coveredRoles.has(role),
+    );
+    if (selected.length < 2 || addsRole || selected.length + 1 === limit) {
+      selected.push(hit);
+      hit.chunk.roles.forEach((role) => coveredRoles.add(role));
+    }
+  }
+  return selected
+    .map((hit) =>
+      hit.chunk.conceptPath
+        ? bestConceptChunk(wikiChunks, hit.chunk.conceptPath, query)
+        : undefined,
+    )
+    .filter((chunk): chunk is IndexedChunk => chunk !== undefined);
+}
+
+const GENERIC_ROUTING_TERMS = new Set([
+  "add",
+  "agent",
+  "change",
+  "cod",
+  "code",
+  "implement",
+  "improve",
+  "repository",
+  "task",
+  "update",
+]);
+
+function hasDistinctiveMetadataMatch(
+  chunk: IndexedChunk,
+  query: string,
+): boolean {
+  const queryTerms = new Set(
+    tokenize(query).filter((term) => !GENERIC_ROUTING_TERMS.has(term)),
+  );
+  if (queryTerms.size === 0) return true;
+  const metadataTerms = new Set(
+    tokenize(
+      [
+        chunk.path,
+        chunk.title,
+        chunk.description,
+        chunk.type,
+        chunk.tags.join(" "),
+        chunk.roles.join(" "),
+        chunk.fields,
+      ]
+        .filter(Boolean)
+        .join(" "),
+    ),
+  );
+  return [...queryTerms].some((term) => metadataTerms.has(term));
+}
+
+function selectedOkfConcepts(
+  corpus: RepositoryCorpus,
+  chunks: IndexedChunk[],
+): OkfConcept[] {
+  return [
+    ...new Map(
+      chunks
+        .map((chunk) =>
+          chunk.conceptPath
+            ? corpus.concepts.get(chunk.conceptPath)
+            : undefined,
+        )
+        .filter((concept): concept is OkfConcept => concept !== undefined)
+        .map((concept) => [concept.path, concept]),
+    ).values(),
+  ];
+}
+
+function mergeMetadata(concepts: OkfConcept[]): OpenWikiMetadata {
+  const merge = (
+    select: (metadata: OpenWikiMetadata) => string[],
+  ): string[] => [
+    ...new Set(concepts.flatMap((concept) => select(concept.metadata))),
+  ];
+  return {
+    changeKinds: merge((metadata) => metadata.changeKinds),
+    invariants: merge((metadata) => metadata.invariants),
+    roles: [...new Set(concepts.flatMap((concept) => concept.metadata.roles))],
+    sourcePaths: merge((metadata) => metadata.sourcePaths),
+    symbols: merge((metadata) => metadata.symbols),
+    testPaths: merge((metadata) => metadata.testPaths),
+    validationCommands: merge((metadata) => metadata.validationCommands),
+  };
+}
+
+function inferQueryRoles(query: string): DocumentRole[] {
+  const roles = new Set<DocumentRole>(["architecture", "domain"]);
+  const add = (role: DocumentRole, pattern: RegExp): void => {
+    if (pattern.test(query)) roles.add(role);
+  };
+  add(
+    "delivery",
+    /\b(?:api|artifact|build|consumer|export|package|public|publish|release|ship)\w*\b/iu,
+  );
+  add(
+    "integration",
+    /\b(?:adapter|integration|middleware|plugin|provider|react|router)\w*\b/iu,
+  );
+  add(
+    "operations",
+    /\b(?:ci|cli|configure|deploy|development|install|operations|tooling)\w*\b/iu,
+  );
+  add(
+    "testing",
+    /\b(?:behavior|compatibility|invariant|regression|test|validate|verify)\w*\b/iu,
+  );
+  add(
+    "workflow",
+    /\b(?:defer|event|lifecycle|reset|rollback|state|transition|workflow)\w*\b/iu,
+  );
+  return [...roles];
+}
+
+function collectInvariants(
+  concepts: OkfConcept[],
+  chunks: IndexedChunk[],
+  query: string,
+): BriefInvariant[] {
+  const candidates: (BriefInvariant & { score: number })[] = [];
+  for (const concept of concepts) {
+    for (const invariant of concept.metadata.invariants) {
+      candidates.push({
+        lineEnd: 1,
+        lineStart: 1,
+        path: concept.path,
+        score: invariantScore(invariant, query) + 8,
+        text: invariant,
+      });
+    }
+  }
+  for (const chunk of chunks) {
+    const lines = chunk.text
+      .split(/\r?\n/gu)
+      .map((line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/u, "").trim())
+      .filter((line) => line.length >= 24 && line.length <= 500);
+    for (const line of lines) {
+      if (!isInvariantText(line)) continue;
+      if (!hasTermOverlap(line, query)) continue;
+      candidates.push({
+        lineEnd: chunk.lineEnd,
+        lineStart: chunk.lineStart,
+        path: chunk.path,
+        score: invariantScore(line, query),
+        text: compactText(line, 240),
+      });
+    }
+  }
+  const seen = new Set<string>();
+  return candidates
+    .sort((left, right) => right.score - left.score)
+    .filter((candidate) => candidate.score > 0)
+    .filter((candidate) => {
+      const key = candidate.text.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, MAX_INVARIANTS)
+    .map((candidate) => ({
+      lineEnd: candidate.lineEnd,
+      lineStart: candidate.lineStart,
+      path: candidate.path,
+      text: candidate.text,
+    }));
+}
+
+function isInvariantText(value: string): boolean {
+  return /\b(?:must|should not|do not|don't|never|preserve|remain|only|before|after|unchanged|idempotent|reset|reuse|invariant|required|incomplete)\b/iu.test(
+    value,
+  );
+}
+
+function invariantScore(value: string, query: string): number {
+  const queryTerms = new Set(tokenize(query));
+  const overlap = tokenize(value).filter((term) => queryTerms.has(term)).length;
+  const force = /\b(?:must|do not|don't|never|required|invariant)\b/iu.test(
+    value,
+  )
+    ? 4
+    : 0;
+  return overlap * 2 + force;
+}
+
+function hasTermOverlap(value: string, query: string): boolean {
+  const queryTerms = new Set(
+    tokenize(query).filter((term) => !GENERIC_ROUTING_TERMS.has(term)),
+  );
+  return tokenize(value).some((term) => queryTerms.has(term));
+}
+
+function collectValidation(
+  concepts: OkfConcept[],
+  chunks: IndexedChunk[],
+): ValidationReference[] {
+  const candidates: ValidationReference[] = [];
+  for (const concept of concepts) {
+    for (const command of concept.metadata.validationCommands) {
+      if (isSafeDisplayedCommand(command)) {
+        candidates.push({ command, path: concept.path });
+      }
+    }
+  }
+  for (const chunk of chunks) {
+    for (const match of chunk.text.matchAll(/`([^`\n]{3,300})`/gu)) {
+      const command = match[1]?.trim();
+      if (command && looksLikeValidationCommand(command)) {
+        candidates.push({ command, path: chunk.path });
+      }
+    }
+  }
+  const seen = new Set<string>();
+  return candidates
+    .filter((candidate) => {
+      if (seen.has(candidate.command)) return false;
+      seen.add(candidate.command);
+      return true;
+    })
+    .slice(0, MAX_VALIDATION_COMMANDS);
+}
+
+function looksLikeValidationCommand(value: string): boolean {
+  return (
+    isSafeDisplayedCommand(value) &&
+    /^(?:bun|cargo|go|make|npm|npx|pnpm|pytest|python\s+-m\s+pytest|ruff|uv\s+run|yarn)\b/iu.test(
+      value,
+    ) &&
+    /\b(?:build|check|lint|test|typecheck|verify|vitest)\b/iu.test(value)
+  );
+}
+
+function isSafeDisplayedCommand(value: string): boolean {
+  return (
+    value.length <= 300 &&
+    !/[\r\n\0]/u.test(value) &&
+    !/(?:\.env|credential|private[_-]?key|secret|token)/iu.test(value)
+  );
+}
+
+function uniquePathHits(hits: RankedHit[]): RankedHit[] {
+  const seen = new Set<string>();
+  return hits.filter((hit) => {
+    if (seen.has(hit.chunk.path)) return false;
+    seen.add(hit.chunk.path);
+    return true;
+  });
+}
+
+function toEvidenceReference(
+  hit: RankedHit,
+  reason: string,
+): EvidenceReference {
+  return {
+    lineEnd: hit.chunk.lineEnd,
+    lineStart: hit.chunk.lineStart,
+    path: hit.chunk.path,
+    reason,
+    ...(hit.chunk.testNames && hit.chunk.testNames.length > 0
+      ? { testNames: hit.chunk.testNames.slice(0, 6) }
+      : {}),
+    ...(hit.chunk.title ? { title: hit.chunk.title } : {}),
+  };
+}
+
+function ownershipReason(chunk: IndexedChunk, references: Set<string>): string {
+  return pathMatchesReference(chunk.path, references)
+    ? "Named by the selected OpenWiki concept as an implementation anchor."
+    : "Highest-ranked implementation ownership candidate; verify in source.";
+}
+
+function deliveryReason(chunk: IndexedChunk): string {
+  const categories = categorize(chunk);
+  if (categories.includes("exports"))
+    return "Public or package export surface.";
+  if (categories.includes("publish_generated")) {
+    return "Generated, packaged, or publish-facing surface.";
+  }
+  if (categories.includes("consumer")) return "Consumer-facing usage surface.";
+  return "Initialization or registration surface.";
+}
+
+function requiresDeliveryReview(
+  query: string,
+  roles: DocumentRole[],
+  changedPaths: string[],
+): boolean {
+  return (
+    roles.includes("delivery") ||
+    /\b(?:api|consumer|export|package|public|publish|release|ship)\w*\b/iu.test(
+      query,
+    ) ||
+    changedPaths.some((candidate) =>
+      /(?:^|\/)(?:index\.[cm]?[jt]sx?|package\.json|dist|publish)(?:$|\/)/u.test(
+        candidate,
+      ),
+    )
+  );
+}
+
+function collectUnknowns(input: {
+  delivery: EvidenceReference[];
+  deliveryRequested: boolean;
+  invariants: BriefInvariant[];
+  ownership: EvidenceReference[];
+  tests: EvidenceReference[];
+}): string[] {
+  const unknowns: string[] = [];
+  if (input.ownership.length === 0) {
+    unknowns.push(
+      "No implementation owner was established; locate it in source.",
+    );
+  }
+  if (input.invariants.length === 0) {
+    unknowns.push("No explicit behavioral invariant was found in the wiki.");
+  }
+  if (input.tests.length === 0) {
+    unknowns.push(
+      "No analogous focused test was found; add task-specific coverage.",
+    );
+  }
+  if (input.deliveryRequested && input.delivery.length === 0) {
+    unknowns.push(
+      "No shipped-surface evidence was found; verify exports manually.",
+    );
+  }
+  return unknowns;
+}
+
+function buildCoverageReview(
+  changedPaths: string[],
+  evidence: EvidenceReference[],
+  referencedPaths: Set<string>,
+): CoverageReviewItem[] {
+  if (changedPaths.length === 0) return [];
+  const normalizedChanges = new Set(changedPaths);
+  const candidates = [...evidence.map((item) => item.path), ...referencedPaths];
+  const seen = new Set<string>();
+  return candidates
+    .filter((candidate) => {
+      if (seen.has(candidate) || normalizedChanges.has(candidate)) return false;
+      seen.add(candidate);
+      return true;
+    })
+    .slice(0, 4)
+    .map((candidate) => ({
+      path: candidate,
+      reason:
+        "Documented adjacent surface is absent from changed_paths; verify that it is intentionally unaffected.",
+    }));
 }
 
 function boostReferencedPaths(
   hits: RankedHit[],
   paths: Set<string>,
+  multiplier = 1.6,
 ): RankedHit[] {
   return hits
     .map((hit) => ({
       ...hit,
       score:
         hit.score *
-        ([...paths].some(
-          (candidate) =>
-            hit.chunk.path === candidate || hit.chunk.path.endsWith(candidate),
-        )
-          ? 2.5
-          : 1),
+        (pathMatchesReference(hit.chunk.path, paths) ? multiplier : 1),
     }))
     .sort((left, right) => right.score - left.score);
 }
 
-function categorize(chunk: IndexedChunk): SymbolTraceCategory[] {
+function pathMatchesReference(path: string, references: Set<string>): boolean {
+  return [...references].some(
+    (candidate) => path === candidate || path.endsWith(candidate),
+  );
+}
+
+function categorize(chunk: IndexedChunk): SourceSurfaceCategory[] {
   const value = `${chunk.path}\n${chunk.text}`;
-  const categories = new Set<SymbolTraceCategory>();
+  const categories = new Set<SourceSurfaceCategory>();
   if (
     /\b(?:exports|entrypoint|public api)\b/iu.test(value) ||
     /\bexport\s+(?:\*|\{[^}]+\})\s+from\b/iu.test(chunk.text) ||
@@ -317,57 +824,8 @@ function isTestChunk(chunk: IndexedChunk): boolean {
   );
 }
 
-function isStateTransitionProducer(chunk: IndexedChunk): boolean {
-  if (
-    isTestChunk(chunk) ||
-    /(?:^|\/)query\/(?:modifier|modifiers)(?:\/|$)/u.test(chunk.path)
-  ) {
-    return false;
-  }
-  const producerPath =
-    /(?:^|\/)(?:actions?|entity|mutation|relation|store|trait|world)(?:\/|[._-])/u.test(
-      chunk.path,
-    );
-  const transitionText =
-    /\b(?:add|change|defer|destroy|emit|flush|remove|replace|reset|trigger|update)(?:d|s|ing)?\b/iu.test(
-      chunk.text,
-    );
-  return producerPath && transitionText;
-}
-
-function traceSymbol(
-  chunks: IndexedChunk[],
-  symbol: string,
-  limit: number,
-): SymbolTraceResult {
-  const leaf = symbol.split(".").at(-1) ?? symbol;
-  const fullPattern = symbol.split(".").map(escapeRegExp).join("\\s*\\.\\s*");
-  const exactSymbol = new RegExp(
-    `(?:^|[^A-Za-z0-9_$])${fullPattern}(?:$|[^A-Za-z0-9_$])`,
-    "u",
-  );
-  const exactLeaf = new RegExp(
-    `(?:^|[^A-Za-z0-9_$])${escapeRegExp(leaf)}(?:$|[^A-Za-z0-9_$])`,
-    "u",
-  );
-  const candidates = emptyTraceGroups();
-  for (const hit of rankKeyword(chunks, `${symbol} ${leaf}`)) {
-    if (!exactSymbol.test(hit.chunk.text) && !exactLeaf.test(hit.chunk.text)) {
-      continue;
-    }
-    for (const category of categorize(hit.chunk)) {
-        candidates[category].push(toResultItem(hit));
-    }
-  }
-  const groups = emptyTraceGroups();
-  fillGroups(groups, candidates, limit, TRACE_CATEGORY_ORDER);
-  return {
-    groups,
-    missing: TRACE_CATEGORY_ORDER.filter(
-      (category) => candidates[category].length === 0,
-    ),
-    symbol,
-  };
+function isRepositoryGuidance(chunk: IndexedChunk): boolean {
+  return /(?:^|\/)(?:AGENTS|CLAUDE)\.md$/iu.test(chunk.path);
 }
 
 function deduplicateTestMirrors(hits: RankedHit[]): RankedHit[] {
@@ -409,69 +867,6 @@ function extractPaths(value: string): Set<string> {
   );
 }
 
-function extractSymbols(value: string): string[] {
-  const symbols = new Set<string>();
-  for (const match of value.matchAll(/`([A-Za-z_$][A-Za-z0-9_$]{2,})`/gu)) {
-    if (match[1]) symbols.add(match[1]);
-  }
-  for (const term of tokenize(value)) {
-    if (term.length >= 4) symbols.add(term);
-  }
-  return [...symbols];
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function emptyChangeSurfaceGroups(): Record<
-  ChangeSurfaceCategory,
-  SearchResultItem[]
-> {
-  return {
-    consumer: [],
-    exports: [],
-    implementation: [],
-    initialization: [],
-    publish_generated: [],
-    state_transitions: [],
-    tests: [],
-  };
-}
-
-function emptyTraceGroups(): Record<SymbolTraceCategory, SearchResultItem[]> {
-  return {
-    consumer: [],
-    exports: [],
-    implementation: [],
-    initialization: [],
-    publish_generated: [],
-    tests: [],
-  };
-}
-
-function fillGroups<Category extends string>(
-  groups: Record<Category, SearchResultItem[]>,
-  candidates: Record<Category, SearchResultItem[]>,
-  totalLimit: number,
-  categoryOrder: readonly Category[],
-): void {
-  let remaining = totalLimit;
-  let index = 0;
-  while (remaining > 0) {
-    let added = false;
-    for (const category of categoryOrder) {
-      const candidate = candidates[category][index];
-      if (!candidate || remaining === 0) continue;
-      groups[category].push(candidate);
-      remaining -= 1;
-      added = true;
-    }
-    if (!added) return;
-    index += 1;
-  }
-}
-
 function response(
   query: string,
   hits: RankedHit[],
@@ -502,7 +897,11 @@ function toResultItem(hit: RankedHit): SearchResultItem {
 }
 
 function compactSnippet(value: string): string {
-  return value.replace(/\s+/gu, " ").trim().slice(0, MAX_SNIPPET_LENGTH);
+  return compactText(value, MAX_SNIPPET_LENGTH);
+}
+
+function compactText(value: string, limit: number): string {
+  return value.replace(/\s+/gu, " ").trim().slice(0, limit);
 }
 
 function scopedChunks(
@@ -547,22 +946,39 @@ function validateQuery(query: string): string {
   return query.trim();
 }
 
-function validateSymbols(symbols: string[]): string[] {
-  if (!Array.isArray(symbols) || symbols.length === 0) {
-    throw new Error("symbols must contain at least one identifier.");
+function validateChangedPaths(paths: string[]): string[] {
+  if (!Array.isArray(paths)) {
+    throw new Error(
+      "changed_paths must be an array of repository-relative paths.",
+    );
   }
-  const unique = [...new Set(symbols.map((symbol) => symbol.trim()))];
-  if (unique.length > MAX_SYMBOLS) {
-    throw new Error(`symbols must contain at most ${MAX_SYMBOLS} identifiers.`);
+  if (paths.length > MAX_CHANGED_PATHS) {
+    throw new Error(
+      `changed_paths must contain at most ${MAX_CHANGED_PATHS} paths.`,
+    );
   }
-  for (const symbol of unique) {
-    if (symbol.length > 200 || !DOTTED_IDENTIFIER.test(symbol)) {
-      throw new Error(
-        "each symbol must be a plain or dotted identifier up to 200 characters.",
-      );
-    }
-  }
-  return unique;
+  return [
+    ...new Set(
+      paths.map((candidate) => {
+        if (
+          typeof candidate !== "string" ||
+          !candidate.trim() ||
+          candidate.length > 300 ||
+          candidate.startsWith("/") ||
+          candidate.includes("\\") ||
+          candidate.split("/").some((part) => part === "" || part === "..") ||
+          /(?:^|\/)(?:\.env(?:\..*)?|credentials\.json|secrets?|tokens?)(?:\/|$)/iu.test(
+            candidate,
+          )
+        ) {
+          throw new Error(
+            "changed_paths must contain safe repository-relative paths.",
+          );
+        }
+        return candidate.trim();
+      }),
+    ),
+  ];
 }
 
 function normalizeLimit(

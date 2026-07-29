@@ -5,9 +5,11 @@ import {
   splitFrontmatter,
 } from "../okf/frontmatter.js";
 import type {
+  DocumentRole,
   IndexedChunk,
   OkfConcept,
   OkfRelationship,
+  OpenWikiMetadata,
   RepositoryCorpus,
 } from "./types.js";
 
@@ -61,6 +63,17 @@ const SECRET_FILE =
 const MARKDOWN_LINK = /\[([^\]]+)\]\(([^)]+)\)/gu;
 const TEST_NAME =
   /\b(?:describe|it|test)(?:\.(?:each|only|skip|todo))?\s*\(\s*(["'`])([^\n]{1,160}?)\1/gu;
+const DOCUMENT_ROLES = new Set<DocumentRole>([
+  "architecture",
+  "delivery",
+  "domain",
+  "integration",
+  "operations",
+  "reference",
+  "repository",
+  "testing",
+  "workflow",
+]);
 
 export interface RepositoryIndexOptions {
   repoRoot: string;
@@ -103,6 +116,8 @@ async function readWikiPages(wikiRoot: string): Promise<WikiPage[]> {
       const type = stringField(fields.type) ?? "Reference";
       const resource = stringField(fields.resource);
       const tags = stringArray(fields.tags);
+      const metadata = parseOpenWikiMetadata(fields.openwiki);
+      const roles = inferDocumentRoles(type, tags, relative, metadata.roles);
       return {
         chunks: chunkWikiPage({
           body,
@@ -110,6 +125,8 @@ async function readWikiPages(wikiRoot: string): Promise<WikiPage[]> {
           description,
           fields,
           relative,
+          resource,
+          roles,
           tags,
           title,
           type,
@@ -117,9 +134,11 @@ async function readWikiPages(wikiRoot: string): Promise<WikiPage[]> {
         concept: {
           ...(description ? { description } : {}),
           incoming: new Set<string>(),
+          metadata: { ...metadata, roles },
           path: conceptPath,
           relationships: extractRelationships(body, relative),
           ...(resource ? { resource } : {}),
+          roles,
           tags,
           title,
           type,
@@ -161,6 +180,7 @@ async function readSourceChunks(
         lineEnd,
         lineStart,
         path: relative,
+        roles: [],
         scope: "source_code",
         tags: pathTags(relative),
         ...(testNames.length > 0 ? { testNames } : {}),
@@ -178,6 +198,8 @@ function chunkWikiPage(input: {
   description?: string;
   fields: Record<string, unknown>;
   relative: string;
+  resource?: string;
+  roles: DocumentRole[];
   tags: string[];
   title: string;
   type: string;
@@ -193,6 +215,7 @@ function chunkWikiPage(input: {
     const heading = selected[0]?.replace(/^#{1,3}\s+/u, "").trim();
     return {
       conceptPath: input.conceptPath,
+      ...(input.description ? { description: input.description } : {}),
       fields: JSON.stringify(input.fields),
       ...(heading ? { heading } : {}),
       id: `wiki:${input.relative}:${start + 1}`,
@@ -200,6 +223,8 @@ function chunkWikiPage(input: {
       lineEnd: Math.max(start + 1, end),
       lineStart: start + 1,
       path: input.conceptPath,
+      ...(input.resource ? { resource: input.resource } : {}),
+      roles: input.roles,
       scope: "wiki",
       tags: input.tags,
       text: [input.description, selected.join("\n")].filter(Boolean).join("\n"),
@@ -241,6 +266,7 @@ function extractRelationships(
     const offset = match.index ?? 0;
     relationships.push({
       context: relationshipContext(body, offset),
+      kind: relationshipKind(relationshipContext(body, offset), sourceRelative),
       target,
     });
   }
@@ -351,6 +377,10 @@ function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter(
@@ -358,6 +388,121 @@ function stringArray(value: unknown): string[] {
           typeof item === "string" && item.trim().length > 0,
       )
     : [];
+}
+
+function parseOpenWikiMetadata(value: unknown): OpenWikiMetadata {
+  const record = isRecord(value) ? value : {};
+  return {
+    changeKinds: slugArray(record.change_kinds, 16),
+    invariants: boundedStringArray(record.invariants, 16, 400),
+    roles: boundedStringArray(record.roles, 9, 40).filter(
+      (role): role is DocumentRole => DOCUMENT_ROLES.has(role as DocumentRole),
+    ),
+    sourcePaths: pathArray(record.source_paths, 32),
+    symbols: boundedStringArray(record.symbols, 48, 120).filter((symbol) =>
+      /^[A-Za-z_$][A-Za-z0-9_$.:-]*$/u.test(symbol),
+    ),
+    testPaths: pathArray(record.test_paths, 32),
+    validationCommands: boundedStringArray(record.validation_commands, 12, 300),
+  };
+}
+
+function inferDocumentRoles(
+  type: string,
+  tags: string[],
+  relative: string,
+  declared: DocumentRole[],
+): DocumentRole[] {
+  const value = `${type} ${tags.join(" ")} ${relative}`.toLowerCase();
+  const roles = new Set<DocumentRole>(declared);
+  const add = (role: DocumentRole, pattern: RegExp): void => {
+    if (pattern.test(value)) roles.add(role);
+  };
+  add(
+    "architecture",
+    /\b(?:architecture|engine|interface|memory|runtime|storage|system)\b/u,
+  );
+  add("delivery", /\b(?:artifact|build|delivery|package|publish|release)\b/u);
+  add("domain", /\b(?:concept|data|domain|model|query|schema)\b/u);
+  add(
+    "integration",
+    /\b(?:ecosystem|integration|platform|plugin|provider|react)\b/u,
+  );
+  add(
+    "operations",
+    /\b(?:contribution|development|operations|practice|tooling)\b/u,
+  );
+  add("repository", /\b(?:project|quickstart|repository)\b/u);
+  add("testing", /\b(?:quality|test|testing|validation|verification)\b/u);
+  add("workflow", /\b(?:automation|ingestion|lifecycle|playbook|workflow)\b/u);
+  if (roles.size === 0) roles.add("reference");
+  return [...roles];
+}
+
+function relationshipKind(
+  context: string,
+  sourceRelative: string,
+): OkfRelationship["kind"] {
+  if (/^(?:quickstart|index)\.md$/u.test(path.posix.basename(sourceRelative))) {
+    return "navigation";
+  }
+  if (
+    /\b(?:export|package|publish|release|ship|surface|bundle|deliver)\w*\b/iu.test(
+      context,
+    )
+  ) {
+    return "delivery";
+  }
+  if (
+    /\b(?:lifecycle|transition|reset|reuse|before|after|enter|exit)\w*\b/iu.test(
+      context,
+    )
+  ) {
+    return "lifecycle";
+  }
+  if (
+    /\b(?:call|depend|dispatch|own|share|configure|secure|adapt|consume)\w*\b/iu.test(
+      context,
+    )
+  ) {
+    return "dependency";
+  }
+  if (/\b(?:start|navigate|read|see|guide|overview)\w*\b/iu.test(context)) {
+    return "navigation";
+  }
+  return "related";
+}
+
+function boundedStringArray(
+  value: unknown,
+  maximumItems: number,
+  maximumLength: number,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.replace(/\s+/gu, " ").trim())
+        .filter((item) => item.length > 0 && item.length <= maximumLength),
+    ),
+  ].slice(0, maximumItems);
+}
+
+function slugArray(value: unknown, maximumItems: number): string[] {
+  return boundedStringArray(value, maximumItems, 60)
+    .map((item) => item.toLowerCase())
+    .filter((item) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(item));
+}
+
+function pathArray(value: unknown, maximumItems: number): string[] {
+  return boundedStringArray(value, maximumItems, 300).filter(
+    (item) =>
+      !path.posix.isAbsolute(item) &&
+      !item.includes("\\") &&
+      !item.split("/").some((part) => part === "" || part === "..") &&
+      !item.split("/").some(isSecretName),
+  );
 }
 
 function toPosix(value: string): string {

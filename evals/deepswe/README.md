@@ -4,10 +4,11 @@ This harness runs a paired DeepSWE experiment with the same tasks, seed, model,
 reasoning effort, attempts, and Harbor environment in both conditions:
 
 - `baseline`: Codex receives only the DeepSWE task and repository.
-- `openwiki`: OpenWiki first documents an isolated clone of the agent-visible
-  repository, then the same Codex adapter is instructed to read the generated
-  quickstart and use OpenWiki's read-only OKF-aware retrieval MCP server before
-  solving the task.
+- `openwiki`: the adapter restores or generates OpenWiki in an isolated clone,
+  merges OpenWiki's managed instructions into the repository's root
+  `AGENTS.md`, and copies both `AGENTS.md` and `openwiki/` into `/app` before the
+  same Codex adapter solves the unchanged DeepSWE task. Codex automatically
+  loads root `AGENTS.md`; the harness adds no treatment-only task prompt.
 
 The harness pins:
 
@@ -15,7 +16,7 @@ The harness pins:
 - `harbor[langsmith]==0.20.0`
 - `litellm==1.83.14` (Harbor's supported lower bound, pinned to avoid a newer
   release's local Rust build requirement)
-- Codex CLI `0.118.0`
+- Codex CLI `0.144.6`
 - the current OpenWiki checkout, packed locally for each treatment run
 
 ## Safety and isolation
@@ -26,9 +27,10 @@ adapter additionally runs OpenWiki against `/tmp/openwiki-source`, a local clone
 of `/app`; OpenWiki never runs from the benchmark task directory and cannot see
 the verifier or reference solution.
 
-Generated wiki files remain outside `/app`, so DeepSWE's patch extraction cannot
-include them. Codex is explicitly told that `/app` is the source of truth and
-that all code changes belong there.
+The generated wiki and merged `AGENTS.md` are copied into `/app` so Codex sees
+the same layout as a normal local OpenWiki user. They are hidden from Git status,
+and the treatment adapter explicitly excludes `AGENTS.md` and `openwiki/**` from
+the verifier patch.
 
 DeepSWE v1.1 normally requires Pier 0.3's `pre_artifacts.sh` lifecycle to copy
 committed work into its separate verifier. This harness retains Harbor 0.20 for
@@ -52,6 +54,13 @@ install and run Codex and OpenWiki's pinned SQLite binding, plus the LangSmith
 API and trace-ingest hosts required by every traced run. The adapter uses the
 task image's existing Node runtime and installs the pinned Codex CLI directly,
 avoiding Harbor's NVM bootstrap.
+When a task image lacks ripgrep, the adapter installs Debian's package after
+disabling only a preconfigured `*nodesource*` apt source inside the disposable
+container; stale NodeSource repositories must not prevent agent setup.
+Parallel runs give agent setup three times Harbor's default deadline so
+concurrent Codex package downloads do not fail before model execution. Override
+this with `--agent-setup-timeout-multiplier` when local registry throughput
+requires a different bound.
 
 For Docker runs, the harness removes inactive per-trial networks after each job
 and checks completed prior jobs for stale networks before launching. Cleanup is
@@ -145,6 +154,18 @@ source ~/.zshrc && python3 evals/deepswe/run.py openwiki \
   --reasoning-effort high
 ```
 
+Generated task wikis are cached on the host in
+`evals/deepswe/.cache/openwiki-wikis`. The key includes the task repository's
+base commit, the normalized OpenWiki package contents, and the OpenWiki model,
+so unchanged reruns restore the same wiki instead of regenerating it. Use
+`--openwiki-cache-dir PATH` to select another persistent cache location. The
+first cache-aware run for a commit still generates and populates the cache.
+By default, a package update may also reuse an older cache whose validated
+`openwiki/.last-update.json` records the exact same task commit and model. Pass
+`--no-reuse-compatible-wiki-cache` to disable that lookup. Pass
+`--require-openwiki-cache` to fail before any wiki-generation model call on a
+cache miss; use this for controlled reruns where wiki Markdown must stay fixed.
+
 Run both paired conditions and summarize them:
 
 ```bash
@@ -164,7 +185,7 @@ hosted parallel environment.
 
 ### Named OpenWiki task suites
 
-Use `--task-suite` for the two exact, reproducible OpenWiki cohorts. A suite
+Use `--task-suite` for the exact, reproducible OpenWiki cohorts. A suite
 selects all of its members regardless of `--n-tasks` and cannot be combined
 with `--task`:
 
@@ -174,7 +195,27 @@ python3 evals/deepswe/run.py paired --task-suite koota-5
 
 # Broader set: the five Koota tasks plus 15 independent repositories
 python3 evals/deepswe/run.py paired --task-suite openwiki-20
+
+# Documentation-leverage set: ten cross-surface tasks from independent cohorts
+python3 evals/deepswe/run.py paired --task-suite openwiki-doc-leverage-10
 ```
+
+The `openwiki-doc-leverage-10` suite targets changes where repository
+documentation should have high leverage: ownership and behavior are spread
+across multiple runtime, serialization, integration, CLI, SDK, or delivery
+surfaces. Its members are disjoint from `openwiki-20` so it can provide a fresh
+test of the OpenWiki hypothesis:
+
+- `aiomonitor-task-snapshots-diff`
+- `bandit-incremental-cache-control`
+- `dynamodb-toolbox-conditional-attribute-requirements`
+- `fastapi-deprecation-response-headers`
+- `go-genai-streamed-function-args`
+- `goreleaser-retry-publish-auditing`
+- `gql-incremental-graphql-delivery`
+- `igel-persist-feature-schema`
+- `onedump-dump-encryption-pipeline`
+- `testem-bail-on-test-failure`
 
 The 15 tasks added to `openwiki-20` are not exposed as a separate runnable
 suite. They were selected from the user-provided `gpt-5.6-terra [medium]`
@@ -203,14 +244,13 @@ proxies for token intensity.
 | `python-statemachine-state-data-scoping`   | python-statemachine / Python  | 3/3 failed, 36.3 steps | Hierarchical state ownership, history, isolation, lifecycle resets |
 
 Treatment runs register `openwiki-retrieval-mcp` inside Codex's isolated home.
-It exposes three read-only workflows over `/app` and the generated wiki:
-`search` with `all`, `wiki`, `source_code`, and `tests` scopes;
-`change_surface` for pre-edit cross-boundary mapping; and batched
-`trace_symbols` for post-edit public-surface verification. Search automatically
-combines exact, BM25, semantic-vector, and OKF graph ranking. Local deterministic
-vectors are the default. Pass `--retrieval-embedding-provider openai` to opt into
-bounded `text-embedding-3-small` reranking; provider failures fall back to local
-vectors.
+It exposes two read-only workflows over `/app` and `/app/openwiki`: `search`
+with `all`, `wiki`, `source_code`, and `tests` scopes, and `change_surface` for
+bounded wiki guidance, cross-boundary source/test mapping, evidence gaps, and
+wiki provenance. Search automatically combines exact, BM25, semantic-vector,
+and OKF graph ranking. Local deterministic vectors are the default. Pass
+`--retrieval-embedding-provider openai` to opt into bounded
+`text-embedding-3-small` reranking; provider failures fall back to local vectors.
 
 If runs already exist, summarize them without invoking Harbor:
 
@@ -236,3 +276,16 @@ OpenWiki's current CLI does not expose generation token usage to Harbor's local
 summary, so treatment summaries include its wall-clock time but not its tokens
 or provider cost. Its LangSmith generation traces in the same experiment provide
 generation-token details.
+
+To measure direct treatment overhead after a run, use:
+
+```bash
+python3 evals/deepswe/analyze_openwiki_usage.py \
+  --job-dir evals/deepswe/results/<openwiki-job>
+```
+
+The analyzer separately reports OpenWiki MCP calls, shell reads under
+`openwiki/`, serialized tool-call and result characters at four characters per
+token, and one automatic inclusion of the managed OpenWiki `AGENTS.md` block.
+It also reports token/tool totals after subtracting that estimated direct
+overhead. It does not estimate repeated cached-context amplification.

@@ -51,6 +51,7 @@ DEFAULT_DEEPSWE_DIR = EVAL_DIR / ".cache" / "deep-swe"
 DEFAULT_ARTIFACTS_DIR = EVAL_DIR / "artifacts"
 DEFAULT_JOBS_DIR = EVAL_DIR / "results"
 DEFAULT_SUMMARY_DIR = EVAL_DIR / "summaries"
+DEFAULT_OPENWIKI_CACHE_DIR = EVAL_DIR / ".cache" / "openwiki-wikis"
 
 KOOTA_5_TASKS = (
     "koota-composite-trait-aspects",
@@ -76,8 +77,21 @@ WIKI_STRESS_15_TASKS = (
     "kgateway-consistent-hash-policy",
     "python-statemachine-state-data-scoping",
 )
+DOC_LEVERAGE_10_TASKS = (
+    "aiomonitor-task-snapshots-diff",
+    "bandit-incremental-cache-control",
+    "dynamodb-toolbox-conditional-attribute-requirements",
+    "fastapi-deprecation-response-headers",
+    "go-genai-streamed-function-args",
+    "goreleaser-retry-publish-auditing",
+    "gql-incremental-graphql-delivery",
+    "igel-persist-feature-schema",
+    "onedump-dump-encryption-pipeline",
+    "testem-bail-on-test-failure",
+)
 TASK_SUITES = {
     "koota-5": KOOTA_5_TASKS,
+    "openwiki-doc-leverage-10": DOC_LEVERAGE_10_TASKS,
     "openwiki-20": (*KOOTA_5_TASKS, *WIKI_STRESS_15_TASKS),
 }
 
@@ -452,6 +466,8 @@ def harbor_args(
         str(args.attempts),
         "--n-concurrent",
         str(args.concurrency),
+        "--agent-setup-timeout-multiplier",
+        str(args.agent_setup_timeout_multiplier),
         "--n-tasks",
         str(len(selected_tasks) if selected_tasks is not None else args.n_tasks),
         "--plugin",
@@ -476,11 +492,18 @@ def harbor_args(
                 "--agent-kwarg",
                 f"openwiki_package={package_path.resolve()}",
                 "--agent-kwarg",
+                f"openwiki_cache_dir={args.openwiki_cache_dir.resolve()}",
+                "--agent-kwarg",
                 f"openwiki_model={args.openwiki_model}",
                 "--agent-kwarg",
                 f"openwiki_timeout_sec={args.openwiki_timeout}",
                 "--agent-kwarg",
                 f"retrieval_embedding_provider={args.retrieval_embedding_provider}",
+                "--agent-kwarg",
+                "reuse_compatible_wiki_cache="
+                f"{str(args.reuse_compatible_wiki_cache).lower()}",
+                "--agent-kwarg",
+                f"require_openwiki_cache={str(args.require_openwiki_cache).lower()}",
             ]
         )
     return command
@@ -772,7 +795,33 @@ def add_common_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=1)
+    parser.add_argument(
+        "--agent-setup-timeout-multiplier",
+        type=float,
+        default=3.0,
+        help="Multiplier for Harbor's agent setup deadline (default: 3.0)",
+    )
     parser.add_argument("--openwiki-timeout", type=int, default=5400)
+    parser.add_argument(
+        "--openwiki-cache-dir",
+        type=Path,
+        default=DEFAULT_OPENWIKI_CACHE_DIR,
+        help="Persistent host cache for generated task wikis",
+    )
+    parser.add_argument(
+        "--reuse-compatible-wiki-cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Reuse a cache whose recorded task commit and model match even when "
+            "the packaged OpenWiki implementation changed"
+        ),
+    )
+    parser.add_argument(
+        "--require-openwiki-cache",
+        action="store_true",
+        help="Fail before wiki generation when no compatible cache exists",
+    )
     parser.add_argument(
         "--retrieval-embedding-provider",
         choices=("local", "openai"),
@@ -799,8 +848,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         subparser = subparsers.add_parser(name)
         add_common_options(subparser)
     args = parser.parse_args(argv)
-    if args.n_tasks <= 0 or args.attempts <= 0 or args.concurrency <= 0:
-        parser.error("--n-tasks, --attempts, and --concurrency must be positive")
+    if (
+        args.n_tasks <= 0
+        or args.attempts <= 0
+        or args.concurrency <= 0
+        or args.agent_setup_timeout_multiplier <= 0
+    ):
+        parser.error(
+            "--n-tasks, --attempts, --concurrency, and "
+            "--agent-setup-timeout-multiplier must be positive"
+        )
     if args.task_suite and args.task:
         parser.error("--task-suite cannot be combined with --task")
     return args
