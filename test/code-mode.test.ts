@@ -43,6 +43,11 @@ describe("ensureCodeModeRepoSetup agent files", () => {
       expect(content).toContain(SNIPPET_START);
       expect(content).toContain(SNIPPET_END);
       expect(content).toContain("## OpenWiki");
+      expect(content).toContain("optional just-in-time context");
+      expect(content).toContain("not required startup reading");
+      expect(content).toContain("verification gaps");
+      expect(content).toContain("quiet validation");
+      expect(content.length).toBeLessThan(2_500);
     }
   });
 

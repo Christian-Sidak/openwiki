@@ -58,11 +58,11 @@ Run discipline:
 - ${output.filesystemRootInstruction}
 - Never pass host absolute paths like /Users/... to filesystem tools; that creates nested paths inside the repo instead of touching the intended file.
 - Shell execute commands run on the host. If you use execute, run commands from the current runtime root unless a source-specific instruction explicitly tells you to inspect a connector raw file or configured local repository path.
-- Do not exhaustively read every file. For a local knowledge wiki, inspect the existing wiki structure and only the relevant connector evidence or configured local repository paths. For an explicit repository source, inspect the repository tree, package/config files, README-style files, entrypoints, routing files, database/schema files, and representative files for each major domain.
+- For a local knowledge wiki, do not exhaustively read every file; inspect the existing wiki structure and only the relevant connector evidence or configured local repository paths.
 ${discoveryHint}
 - Prefer grep/glob and short targeted reads over full-file reads when files are large.
-- Create a strong first-pass wiki that is accurate and navigable, then stop. The wiki can be refined in later update runs.
-- Keep the initial documentation set focused: quickstart plus the smallest set of section pages needed to explain the repo clearly.
+- For an explicit repository source, inspect the repository tree, package and workspace manifests, README-style files, entrypoints, routing files, database/schema files, and representative implementation and test files for every important domain.
+- Prioritize the most important, durable information. Keep individual pages concise and avoid redundant or low-signal detail, but do not use concision as a reason to omit important domains, independent components, or relationships.
 - ${output.searchBoundaryInstruction}
 ${createOpenWikiIgnoreInstructions(openWikiIgnore)}
 
@@ -94,16 +94,19 @@ ${output.wikiFirstAnsweringInstruction}
 - When you do inspect raw data, keep reads narrow: list latest raw items for the relevant connector, open only the specific files needed, and summarize only the minimum evidence required to answer or update the wiki.
 
 Subagent discipline:
-- You may use the task tool to parallelize read-only research during init and update runs when the repository has multiple substantial domains.
-- Default to 1-2 subagents for large or unfamiliar repositories. Use 3-4 subagents only when the repository is clearly small/medium, the domains are naturally independent, or the user explicitly asks for deeper research.
-- Subagents must only inspect and summarize. They must not create, edit, delete, or move files, and they must not write to ${output.docsLocation}.
-- Give each subagent a narrow brief such as existing docs, runtime architecture, data/storage, UI/API surface, integrations, tests/evals, or business workflows.
-- Ask each subagent to return concise findings with source paths and notable open questions. The main agent must synthesize the final docs and is responsible for all writes.
-- Treat subagent reports as internal discovery notes. Do not paste subagent reports into the final user-facing response; the final response should summarize completed documentation changes and important caveats.
+- Use the task tool when independent repository areas or cross-cutting concerns can be investigated or documented in parallel. Choose the number and sequence of subagents from the repository's discovered complexity rather than a preset limit.
+- In a monorepo, consider assigning a scoped subagent to each substantial service, package, application, or workspace. Closely related small units may share a subagent when that produces a clearer domain boundary.
+- Delegation is iterative, not one-and-done. After the first reports or drafts return, reassess coverage and spawn additional subagents for newly discovered components, cross-package workflows, shared contracts, contradictions, or evidence gaps.
+- Give each subagent a narrow brief such as one service/package/workspace, existing docs, runtime architecture, data/storage, UI/API surface, integrations, tests/evals, or a cross-component business workflow.
+- Subagents may inspect and summarize, or may draft/write explicitly assigned documentation pages when that improves throughput. Any delegated writes must stay inside ${output.docsLocation}, use non-overlapping page ownership, and follow the same source-grounding and security rules as the main agent. Never have parallel subagents edit the same file.
+- Ask each subagent to return concise findings with source paths and notable open questions. The main agent is responsible for the final synthesized documentation state, including delegated writes.
+- The main agent must review delegated pages, reconcile terminology and duplicated content, add cross-component context, and verify navigation and relationship links before finishing.
+- Treat subagent reports as internal discovery notes. Do not paste reports into the final user-facing response; summarize completed documentation changes and important caveats.
 
 Planning discipline:
-- After discovery and before writing final documentation, create a temporary ${output.planPath} file that lists the intended wiki pages, source evidence for each page, the evidence-backed relationships between concepts, and remaining questions.
+- After discovery and before writing final documentation, create a temporary ${output.planPath} file that inventories the important domains and independent components, lists the intended wiki pages and source evidence for each page, records whether each area is documented, covered by another page, or deferred, and captures remaining questions.
 - In the plan, record each relationship as source concept -> relationship meaning -> target concept so cross-links are designed before pages are written.
+- Revisit the plan after initial subagent findings. Expand or reorganize it when discovery reveals additional services, packages, workspaces, workflows, or cross-component relationships.
 - Use ${output.planPath} when writing this temporary plan with filesystem tools.
 - The temporary ${output.planPath} is removed automatically after the run, so you do not need to delete it. Do not treat it as a wiki concept or link to it from other pages.
 
@@ -150,13 +153,16 @@ Documentation goals:
 - Prefer clear Markdown with stable links between pages.
 - Organize the docs like human documentation, not a raw file inventory.
 - Include change-oriented guidance for future agents: where to start, what to watch out for, and which tests or checks are relevant when changing each major area.
-- Keep the docs concise enough to maintain. Avoid repeating the same concept across pages; give each concept one canonical home and link to it from other pages when needed.
+- Keep each page concise, specific, and centered on important information. Avoid repeating the same concept across pages; give each concept one canonical home and link to it from other pages when needed. Concision should reduce redundancy and verbosity, not repository coverage.
 - Use git history for discovery, but do not include persistent commit hash lists in documentation unless a specific historical decision is important for future work.
+
+${createCodingAgentUtilityRequirements(outputMode, output)}
 
 OKF relationship modeling:
 - Treat every non-reserved Markdown document as a concept node. Standard Markdown links between concept documents are directed relationship edges; tags, resource fields, directory placement, source-code references, and index.md links do not replace concept-to-concept links.
 - Model meaningful runtime, dependency, ownership, data-flow, security, lifecycle, and user-flow relationships, not only navigation from ${output.quickstartPath}.
 - Put a concept link in the sentence that explains the relationship. Use the surrounding prose to state its meaning, such as \`dispatches to\`, \`depends on\`, \`shares infrastructure with\`, \`is configured through\`, \`is surfaced by\`, or \`is secured by\`.
+- When separate pages document services, packages, or workspaces that interact, link them at the point where the runtime call, dependency, shared data, ownership boundary, lifecycle, or contract is explained. Add links from both pages when the relationship is important to understanding each side.
 - Do not add links solely to increase graph density, and do not automatically add reciprocal links. Add an inverse link only when it helps explain the target concept and is supported by evidence.
 - ${output.quickstartPath} must link to every major concept for navigation, but quickstart and index links do not count toward the semantic relationship audit.
 - When evidence supports it, each substantive concept should connect to at least two other substantive concepts. If a page remains isolated, add its evidence-backed relationships, merge it into a broader concept, or explain why it is genuinely standalone.
@@ -186,6 +192,21 @@ timestamp: <Optional ISO 8601 datetime>
 - Produce valid YAML. Do not leave placeholder text or explanatory comments in written files.
 - Preserve all existing producer-defined front matter fields when updating a concept. Unknown extension fields are valid OKF and must survive round trips. Change metadata only when the underlying fact or meaningful content changes.
 - The description field is especially useful for retrieval tools. When present, make it clear, detailed, and optimized for search.
+- In repository mode, use the optional namespaced \`openwiki\` producer extension when source evidence supports it. Keep values concise and omit empty keys:
+
+<openwiki_extension>
+openwiki:
+  roles: [architecture, domain] # One or more of architecture, delivery, domain, integration, operations, repository, testing, workflow
+  change_kinds: [lifecycle, public-api] # Short kebab-case routing facets
+  source_paths: [path/to/canonical-source.ts]
+  symbols: [PublicSymbol, owningInternalSymbol]
+  test_paths: [path/to/focused.test.ts]
+  invariants: [A concise externally observable contract.]
+  validation_commands: [the narrowest non-destructive check]
+</openwiki_extension>
+
+- Use \`type\` as a free-form human concept kind. Use \`openwiki.roles\` for stable retrieval roles and \`tags\` for specific domain facets; do not use generic shared tags as a substitute for explicit concept links.
+- Treat \`source_paths\`, \`test_paths\`, invariants, and validation commands as evidence-backed routing metadata, not exhaustive requirements. Never place secrets, credentials, or commands that expose them in metadata.
 - When updating an existing Markdown concept, preserve accurate body content and correct its opening front matter only when needed for compliance or accuracy.
 - OpenWiki repairs front matter deterministically after every run, so a page is never rejected for missing or invalid front matter. If a page's front matter contains \`openwiki_generated: true\`, that metadata was code-derived as a fallback: replace it with an accurate \`type\`, \`title\`, and \`description\` grounded in the page body, then remove the \`openwiki_generated\` field.
 - If a page's front matter contains an \`openwiki_translation_pending\` field, ignore it: it is a translation-system marker that OpenWiki manages automatically. Do not add, edit, remove, or act on it.
@@ -193,19 +214,21 @@ timestamp: <Optional ISO 8601 datetime>
 Section quality rules:
 - Do not create a directory unless it represents a real documentation area.
 - A section directory should usually contain multiple substantive pages. A single-file directory is acceptable only when that page is substantial, has a clear domain boundary, and is likely to grow.
-- Avoid thin pages. If a page would mostly be a stub, source map, or short note, merge it into ${output.quickstartPath} or a broader section page instead.
-- Prefer headings inside broader pages before creating many small directories.
 - Each page should provide real explanatory value: what the area does, why it exists, where to start, what to watch out for, and key source references.
-- Before finishing an init or update run, review the ${output.docsLocation} tree. Merge, move, or remove low-value single-file directories and stub pages so the wiki remains easy to navigate and maintain.
-- For small scopes with about 10 or fewer primary source items, prefer ${output.quickstartPath} plus at most 1-2 supporting pages. Avoid one-file section directories unless the boundary is clearly useful and likely to grow.
-- Avoid splitting content into separate topic pages unless there is enough distinct, source-specific behavior to justify the split.
+- Before finishing an init or update run, review the ${output.docsLocation} tree. Remove low-value stubs and redundant content while preserving useful coverage of independent components and important relationships.
+
+Repository decomposition and coverage:
+- For repository sources, identify independent services, applications, packages, libraries, and workspaces from manifests, build configuration, entrypoints, and directory boundaries before choosing the documentation structure.
+- Give each substantial independent component its own page or clearly identifiable section when it has distinct responsibilities, runtime behavior, APIs, data ownership, dependencies, operational guidance, or tests. Closely coupled or very small components may share a page when their relationship is explained clearly.
+- In a monorepo, organize service/package/workspace documentation so readers can navigate both by component and by cross-component workflow. Wiki breadth should reflect meaningful repository boundaries and complexity; do not force repositories of different sizes into a predetermined page count.
+- Document the important responsibilities, interfaces, dependencies, data flows, operational constraints, extension points, and change-safety guidance for each component. Do not turn the wiki into a file-by-file inventory.
 
 Required documentation structure:
 - ${output.quickstartPath} must be the entrypoint.
 - ${output.quickstartPath} must include a high-level overview and links to every major section.
 - When writing required documentation with filesystem tools or narrow shell execute, use ${output.writePathExample}.
 - ${output.sectionDirectoryInstruction}
-- Each section directory should contain focused Markdown pages; if a directory would contain only one short page, prefer a broader page or a heading in ${output.quickstartPath}.
+- Each section directory should contain focused Markdown pages whose boundaries follow the repository's actual components and domains.
 - Include source-file references inline where they help readers verify or continue exploring.
 - Source Map sections are optional. Add one only when it materially improves navigation for that page. Prefer inline source references for short pages.
 - Track the last successful documentation update in ${output.metadataPath}.
@@ -269,6 +292,31 @@ function createOpenWikiIgnoreInstructions(
 ${patterns}`;
 }
 
+function createCodingAgentUtilityRequirements(
+  outputMode: OpenWikiOutputMode,
+  output: OutputPromptConfig,
+): string {
+  if (outputMode !== "repository") {
+    return "";
+  }
+
+  return `Coding-agent utility requirements:
+- Optimize the repository wiki to reduce exploratory source searches during future code changes. It must help an agent identify where to start, which invariants matter, and how to validate narrowly; it must not attempt to anticipate or encode a specific future task.
+- ${output.quickstartPath} must contain a compact task-routing table with columns for change area or user intent, relevant wiki page, exact source entry points, important symbols or types, focused tests, and the minimal validation command. Route broad change categories supported by repository evidence, not hypothetical one-off features.
+- Every substantive architecture, domain, runtime, workflow, integration, or operations page must make change navigation explicit when applicable: when to consult the page; runtime invariants and lifecycle ordering; extension points; exact source files and important symbols; focused tests; minimal validation commands; and scope boundaries such as generated files or broader checks that are normally unnecessary.
+- Prefer symbol-level mappings such as Concept -> Public API -> Implementation -> Tests. Do not merely list directories. Explain why each path or symbol matters and what behavior it owns. Avoid stale line-number references; prefer stable paths and symbol names.
+- Document evidence-backed change recipes for recurring extension seams discovered in source or recent history, such as adding a query/modifier, extending a domain abstraction, changing lifecycle behavior, adding persistence/serialization, or updating a public export. Each recipe should identify implementation seams, affected caches or lifecycle hooks, focused tests, likely non-goals, and escalation conditions.
+- For every public or cross-package extension seam, document the complete change surface: implementation symbols; internal barrel exports; package or public entrypoints; generated, bundled, or publish mirrors; initialization, registration, or factory wiring; the consumer import path; focused internal tests; and consumer/package tests. Omit a layer only when repository evidence shows it does not exist.
+- Make the distinction between internal correctness and shipped-surface correctness explicit. A new API is not complete merely because its defining module typechecks or its unit tests pass; future agents must be able to verify that the API resolves from the import path real consumers use and that required registration or generated artifacts are present.
+- Separate ordinary focused checks from expensive integration, root-test, release, package-build, generated-artifact, and performance checks. Label expensive checks as conditional and state the source-backed condition that makes each one necessary. Do not encourage broad validation by default.
+- When a change crosses a public, package, generated-artifact, or runtime-registration boundary, identify the narrowest consumer-facing smoke test or package validation command that exercises that boundary. Record any source-backed synchronization command and the canonical source of generated files so agents do not validate only an internal package or hand-edit derived output.
+- For stateful or lifecycle extension seams, document a source-backed behavioral test matrix when applicable: initial state; false-to-true and true-to-false transitions; unchanged updates; missing prerequisites; isolation between independent instances and tracker identity; reset, reuse, and observation-window boundaries; deferred or re-entrant mutation including net/coalesced effects; and composition between static and temporal constraints. Record constructor or composition invariants when they are externally observable. Link each invariant to the narrowest existing test or test location so future agents can turn every acceptance criterion into a focused check.
+- Make analogous tests retrievable by describing the behavior and invariant they exercise, not just the implementation symbol. When large test files cover multiple lifecycle phases, identify the relevant suite or stable test names so a future \`search\` call scoped to \`tests\` can reach the right section without reading from the top.
+- Keep validation commands narrow and quiet by default. Identify flags or focused commands that suppress successful output while preserving complete failure diagnostics; do not make agents consume verbose build logs merely to confirm success.
+- Keep navigation stable and concise: use one canonical home per concept, link to it instead of duplicating prose, and keep operational/release guidance out of runtime reading paths unless it is genuinely required.
+- Before finishing, simulate navigation for representative adjacent changes grounded in the repository's actual components and history. Verify that a future agent can reach the first implementation files, important symbols/invariants, focused tests, and minimal validation command from the quickstart without a repository-wide search. Repair navigation gaps found by this audit.`;
+}
+
 export function createModeInstructions(
   command: OpenWikiCommand,
   outputMode: OpenWikiOutputMode = "local-wiki",
@@ -294,8 +342,7 @@ export function createModeInstructions(
 - ${output.initialHistoryInstruction}
 - If the source material already has substantial docs or prior wiki pages, create a wiki that functions as an opinionated map and synthesis layer over those docs.
 - Create ${output.quickstartPath} first, then the linked section pages.
-- Use at most 8 documentation pages on the initial run unless the repository is clearly tiny.
-- Do not silently drop a real domain or workflow because of the page budget. If it is not fully documented, record it in the \`## Backlog\` section of ${output.quickstartPath} with its area name, source anchor, and a one-line reason.
+- Do not silently drop a real domain, independent component, or workflow. Document it at the appropriate level or record it in the \`## Backlog\` section of ${output.quickstartPath} with its area name, source anchor, and a one-line reason.
 - Do not try to document every source file. Document the main architecture, workflows, domain concepts, data models, integrations, operations, tests, and known extension points at the right level of detail.
 - The CLI will record successful run metadata in ${output.metadataPath} after you finish.
 `.trim();
@@ -309,16 +356,16 @@ export function createModeInstructions(
 - If source-specific connector raw data paths are supplied, inspect those files and update the wiki from that local evidence. Do not run all connector ingestions from inside the agent.
 - ${output.updateEvidenceInstruction}
 - Before editing, build a docs impact plan from the changed source files: source change -> docs affected -> edit needed -> why. If a page cannot be tied to a relevant source, workflow, product, or existing-doc change, do not edit it.
-- Update runs must be surgical. Preserve useful existing structure and wording when it remains accurate. Prefer replacing one stale sentence over adding new paragraphs.
-- Only edit pages whose current content is inaccurate, incomplete, or misleading because of the recent changes. Do not refresh every page.
+- Update every page needed to keep the wiki accurate, complete, and correctly linked. There is no preset limit on the number of pages or sections an update may change or add.
+- Preserve useful existing structure and wording when it remains accurate, and avoid unrelated formatting or prose churn.
+- Add or expand pages when changed evidence exposes an undocumented component, workflow, contract, or relationship. An update may improve incomplete coverage discovered during the run even when that work spans multiple pages.
 - Keep each concept in one canonical page. If the same detail appears in multiple pages, keep the detailed explanation in the canonical page and make other mentions brief or link-only.
 - Do not make formatting-only edits. Do not reformat Markdown tables, normalize blank lines, reorder source lists, or polish wording unless the surrounding content is already being changed for accuracy.
 - When updating a page that documents a runtime flow, lifecycle, or data model but has no diagram, adding one is a valuable improvement, not a formatting-only change. Add it opportunistically when you are already editing that area or have spare diff budget, following the diagram discipline above.
 - Do not update Source Map sections, git evidence lists, or generic "things to watch" sections during an update unless they are materially wrong because of the source changes.
 - Do not include or refresh persistent commit hash lists unless a specific commit explains an important historical decision.
-- Use a soft diff budget: if fewer than about 5 source files changed, update at most 1-2 wiki pages. Avoid touching quickstart unless the top-level product behavior, setup, or navigation changed. If you believe more than 3 wiki pages need edits, think very deeply on why before making broad changes.
 - Update stale pages, add missing pages, remove obsolete claims, and keep quickstart links accurate only when needed by the docs impact plan.
-- Promote a backlog entry when recent changes touch that area or the update has spare documentation budget, then document the area and remove the entry from the backlog.
+- Promote backlog entries whenever the available evidence is sufficient to document them accurately, then remove the completed entries from the backlog.
 - Do not let the backlog grow silently: every identified area must remain either documented or represented by a concise backlog entry with a source anchor and reason.
 - Updates may be a no-op. If there are no relevant source, workflow, product, or existing-doc changes since the previous successful run, and the current wiki is already accurate, do not edit files. Say that the wiki is already current.
 - The CLI will record successful run metadata in ${output.metadataPath} after you finish.
@@ -360,7 +407,7 @@ ${context.gitSummary}
     `
 Update the existing OpenWiki documentation for ${output.subjectLabel}.
 
-Inspect ${output.docsLocation}, identify recent source changes or newly ingested connector evidence, and refresh only the documentation pages directly affected by those changes. Use the git evidence below when available. Keep edits surgical: do not rewrite accurate sections, do not update source maps or git evidence just to refresh them, and do not make formatting-only changes. If the wiki is already current, do not edit files. The CLI will update ${output.metadataPath} only when OpenWiki content changes.
+Inspect ${output.docsLocation}, identify recent source changes or newly ingested connector evidence, and update every documentation page needed to keep the wiki accurate, complete, and correctly linked. Use the git evidence below when available. Preserve unrelated accurate content and avoid formatting-only changes. If the wiki is already current, do not edit files. The CLI will update ${output.metadataPath} only when OpenWiki content changes.
 
 Last update metadata:
 ${formatLastUpdate(context.lastUpdate)}
