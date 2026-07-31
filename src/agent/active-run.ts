@@ -4,7 +4,7 @@ import type { OpenWikiContentSnapshot } from "./utils.js";
 /**
  * Everything the crash guard needs to stamp an interrupted run post-mortem.
  */
-export type ActiveRunRecord = {
+export interface ActiveRunRecord {
   /**
    * Command of the in-flight run.
    */
@@ -37,7 +37,7 @@ export type ActiveRunRecord = {
    * (English) is assumed.
    */
   language?: string;
-};
+}
 
 /**
  * The single in-flight run, or null when the process is idle. One run at a time by design.
