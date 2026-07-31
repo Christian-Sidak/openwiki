@@ -60,6 +60,7 @@ import {
   withAnthropicAuthEnvNeutralized,
 } from "./vertex-surface.js";
 import type {
+  InterruptedRunError,
   OpenWikiCommand,
   OpenWikiOutputMode,
   OpenWikiRunEvent,
@@ -128,6 +129,14 @@ import {
 import { inStage, inStageSync, tagErrorStage } from "../telemetry/index.js";
 import type { RunTelemetryContext } from "../telemetry/index.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
+import { clearActiveRun, registerActiveRun } from "./active-run.js";
+import { TruncationError, TruncationMonitor } from "./truncation-monitor.js";
+
+/**
+ * Global bound on concurrently executing runnables inside one agent run
+ * (parallel tool calls, subagent fan-out).
+ */
+const AGENT_MAX_CONCURRENCY = 4;
 
 export async function runOpenWikiAgent(
   command: OpenWikiCommand,
@@ -303,6 +312,7 @@ async function runOpenWikiAgentCore(
     { errorClass: "build_error", errorDetail: "run_context" },
   );
   emitDebug(options, "context=created");
+
   const openWikiSnapshotBefore =
     command === "chat"
       ? null
@@ -311,6 +321,16 @@ async function runOpenWikiAgentCore(
           () => createOpenWikiContentSnapshot(cwd, outputMode),
           { errorClass: "build_error", errorDetail: "snapshot" },
         );
+  // Stamp this run as active before the model spins up so the crash guard can mark
+  // it interrupted from any later fatal path. Cleared in the finally below.
+  registerActiveRun({
+    command,
+    cwd,
+    modelId,
+    outputMode,
+    snapshotBefore: openWikiSnapshotBefore,
+    language: context.language,
+  });
   emitDebug(options, "openwiki.snapshot=created");
   const model = inStageSync(
     "build",
@@ -429,6 +449,7 @@ async function runOpenWikiAgentCore(
   };
 
   emitDebug(options, "stream=opening protocol=events version=v3");
+  const truncationMonitor = new TruncationMonitor();
   const stream = await inStage(
     "build",
     () =>
@@ -437,6 +458,9 @@ async function runOpenWikiAgentCore(
           thread_id: threadId,
         },
         version: "v3",
+        signal: options.signal,
+        callbacks: [truncationMonitor],
+        maxConcurrency: AGENT_MAX_CONCURRENCY,
       }),
     { errorClass: "build_error", errorDetail: "stream_open" },
   );
@@ -463,6 +487,10 @@ async function runOpenWikiAgentCore(
       }
     }
     emitDebug(options, "stream=completed");
+
+    if (truncationMonitor.truncated) {
+      throw new TruncationError(truncationMonitor.truncationCount);
+    }
   } catch (error) {
     tagErrorStage(error, "run");
 
@@ -487,6 +515,15 @@ async function runOpenWikiAgentCore(
         "interrupted",
         context.language,
       );
+
+      // Carry the outcome on the error so the CLI only claims progress was
+      // saved when a stamp actually landed. An abort before any page changed
+      // writes nothing, so there is nothing to resume and nothing to announce.
+      if (error instanceof Error) {
+        (error as InterruptedRunError).openWikiInterruptStamped =
+          metadataWritten;
+      }
+
       emitDebug(
         options,
         metadataWritten ? "metadata=written" : "metadata=skipped",
@@ -497,6 +534,7 @@ async function runOpenWikiAgentCore(
 
     throw error;
   } finally {
+    clearActiveRun();
     prunePersistentCheckpointHistory(
       checkpointTarget,
       checkpointer,

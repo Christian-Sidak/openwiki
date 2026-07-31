@@ -74,6 +74,13 @@ const PROVIDER_ERROR_CODES: Readonly<Record<string, ErrorClassification>> = {
  * but only an enum member is ever returned.
  */
 export function classifyError(error: unknown): ErrorClassification {
+  // A truncation is an output cut off at the model's max-tokens cap: a
+  // context-limit failure we own (raise the cap or chunk the work). It is thrown
+  // as a named error, so route it by name before status or message are read.
+  if (error instanceof Error && error.name === "TruncationError") {
+    return { errorClass: "context_limit_error", errorDetail: "truncation" };
+  }
+
   if (error instanceof Error && error.name === "AbortError") {
     return { errorClass: "aborted" };
   }
@@ -122,7 +129,11 @@ export function classifyError(error: unknown): ErrorClassification {
   ) {
     return { errorClass: "context_limit_error" };
   }
-  if (/quota|insufficient_quota|billing/u.test(message)) {
+  if (
+    /quota|insufficient_quota|billing|usage limit|credit balance|insufficient credit/u.test(
+      message,
+    )
+  ) {
     return { errorClass: "provider_error", errorDetail: "quota_exceeded" };
   }
   if (/timeout|timed out|etimedout/u.test(message)) {

@@ -87,6 +87,7 @@ import {
   type OpenWikiProvider,
 } from "./constants.js";
 import type {
+  InterruptedRunError,
   OpenWikiCommand,
   OpenWikiOutputMode,
   OpenWikiRunOptions,
@@ -99,6 +100,9 @@ import {
   withRunTelemetry,
   type RunTelemetryContext,
 } from "./telemetry/index.js";
+import { installCrashGuard } from "./crash-guard.js";
+
+installCrashGuard();
 
 type RunState =
   | { status: "idle" }
@@ -287,6 +291,7 @@ function App({ command }: AppProps) {
     startupModelId,
   );
   const activeRunId = useRef(0);
+  const activeAbortController = useRef<AbortController | null>(null);
   const sessionThreadId = useRef(createOpenWikiThreadId(runtimeCwd));
   const sessionThreadMode = useRef<OpenWikiRunMode>(runMode);
   const mountedRef = useRef(false);
@@ -457,6 +462,8 @@ function App({ command }: AppProps) {
     sessionThreadId.current = createOpenWikiThreadId(runtimeCwd);
     activeRunCredentialDiagnostics.current = undefined;
     activeRunLog.current = [];
+    activeAbortController.current?.abort();
+    activeAbortController.current = null;
     nextLogId.current = 1;
     nextCompletedRunId.current = 1;
     setCompletedRuns([]);
@@ -556,6 +563,11 @@ function App({ command }: AppProps) {
     const runId = activeRunId.current + 1;
     const runMessage = activeUserMessage;
 
+    // A superseded run is cancelled, not just muted. Before this, the old run kept executing and
+    // writing files alongside its replacement.
+    activeAbortController.current?.abort();
+    activeAbortController.current = new AbortController();
+
     activeRunId.current = runId;
     activeRunCredentialDiagnostics.current = undefined;
     activeRunLog.current = [];
@@ -615,6 +627,7 @@ function App({ command }: AppProps) {
       outputMode: runtimeOutputMode,
       threadId: sessionThreadId.current,
       telemetryFile: command.telemetryFile ?? undefined,
+      signal: activeAbortController.current?.signal,
       onEvent: handleRunEvent,
     };
 
@@ -4170,6 +4183,12 @@ function shouldAutoExitStartupRun(command: CliCommand): boolean {
 async function runPrintCommand(
   command: Extract<CliCommand, { kind: "run" }>,
 ): Promise<void> {
+  const abortController = new AbortController();
+  const onSigint = (): void => {
+    abortController.abort();
+  };
+  process.once("SIGINT", onSigint);
+
   try {
     const output: string[] = [];
 
@@ -4190,6 +4209,7 @@ async function runPrintCommand(
       outputMode: runtimeOutputMode,
       threadId: createOpenWikiThreadId(runtimeCwd),
       telemetryFile: command.telemetryFile ?? undefined,
+      signal: abortController.signal,
       onEvent: handlePrintEvent,
     };
 
@@ -4238,11 +4258,26 @@ async function runPrintCommand(
 
     process.exitCode = 0;
   } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      // Only announce saved progress when the run actually stamped one. An
+      // abort before any page changed leaves nothing to resume, so stay quiet
+      // and let the exit code speak.
+      if ((error as InterruptedRunError).openWikiInterruptStamped === true) {
+        process.stderr.write(
+          "Run interrupted. Progress was stamped; the next run picks up from it.\n",
+        );
+      }
+      process.exitCode = 130;
+      return;
+    }
+
     const message = getErrorMessage(error);
     process.stderr.write(`${message}\n`);
     writePrintAuthFix(error, message);
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 }
 

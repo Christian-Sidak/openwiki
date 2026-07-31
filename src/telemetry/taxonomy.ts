@@ -43,8 +43,9 @@ const FIXED_ERROR_DETAILS: Readonly<
   okf_error: ["migrate", "index_sync", "mermaid"],
   checkpointer_error: ["create", "persist", "chmod"],
   output_error: ["json_parse", "schema"],
-  // No detail split: the family is the whole signal.
-  context_limit_error: [],
+  // `truncation` = output cut off at the max-tokens cap; a bare
+  // context_limit_error is a prompt that overflowed the window. Both own to us.
+  context_limit_error: ["truncation"],
   agent_error: [],
   aborted: [],
 };

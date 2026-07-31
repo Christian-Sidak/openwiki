@@ -41,9 +41,29 @@ export type OpenWikiRunOptions = {
   threadId?: string;
   userMessage?: string | null;
   telemetryFile?: string;
+  signal?: AbortSignal;
 };
 
 export type UpdateRunStatus = "complete" | "interrupted";
+
+/**
+ * An abort/interrupt error, augmented by the agent run with whether it managed
+ * to persist an interrupted stamp before unwinding.
+ *
+ * The CLI reads this to decide whether to tell the user progress was saved: a
+ * run aborted before any wiki page changed writes no stamp, so there is nothing
+ * to resume and no message worth printing.
+ */
+export interface InterruptedRunError extends Error {
+  /**
+   * Whether `persistRunMetadataIfChanged` wrote an interrupted stamp for this run.
+   *
+   * @default undefined - the abort escaped before any stamp attempt (e.g. during
+   * setup or connector ingestion) or the stamp write itself failed; treated as
+   * not stamped, so the CLI prints nothing.
+   */
+  openWikiInterruptStamped?: boolean;
+}
 
 export type UpdateMetadata = {
   updatedAt: string;
