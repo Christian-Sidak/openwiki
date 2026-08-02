@@ -293,7 +293,8 @@ export function createModeInstructions(
 - ${output.initialInventoryInstruction}
 - ${output.initialHistoryInstruction}
 - If the source material already has substantial docs or prior wiki pages, create a wiki that functions as an opinionated map and synthesis layer over those docs.
-- Create ${output.quickstartPath} first, then the linked section pages.
+- Write your section plan to ${output.planPath} first, then create the section directories and pages.
+- Create ${output.quickstartPath} last, after the section pages exist. Link only pages you actually wrote. Never link a page you have not created.
 - Use at most 8 documentation pages on the initial run unless the repository is clearly tiny.
 - Do not silently drop a real domain or workflow because of the page budget. If it is not fully documented, record it in the \`## Backlog\` section of ${output.quickstartPath} with its area name, source anchor, and a one-line reason.
 - Do not try to document every source file. Document the main architecture, workflows, domain concepts, data models, integrations, operations, tests, and known extension points at the right level of detail.
@@ -344,7 +345,7 @@ Initialize OpenWiki documentation for ${output.subjectLabel}.
 
 Inspect the relevant evidence thoroughly, identify the major technical, business, or knowledge domains, and write the initial documentation under ${output.docsLocation}.
 
-Start with ${output.quickstartPath} as the entrypoint. Then create section directories and pages that explain the subject in a way that is useful to both humans and future agents.
+Write your plan to ${output.planPath}, then create section directories and pages that explain the subject in a way that is useful to both humans and future agents. Write ${output.quickstartPath} last, as the entrypoint, linking only the pages you created.
 
 Wiki brief:
 ${formatWikiGoal(context.wikiGoal)}

@@ -120,16 +120,20 @@ import {
   validateExternalCliCredential,
 } from "../external-cli-auth.js";
 import {
+  assertUsableHistory,
   createOpenWikiContentSnapshot,
   getUpdateNoopStatus,
   createRunContext,
   persistRunMetadataIfChanged,
+  readLastUpdate,
   removeTemporaryPlanFile,
   shouldCheckUpdateNoop,
 } from "./utils.js";
 import { inStage, inStageSync, tagErrorStage } from "../telemetry/index.js";
 import type { RunTelemetryContext } from "../telemetry/index.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
+import { clearActiveRun, registerActiveRun } from "./crash-guard.js";
+import { TruncationError, TruncationMonitor } from "./truncation-monitor.js";
 
 export async function runOpenWikiAgent(
   command: OpenWikiCommand,
@@ -162,6 +166,18 @@ export async function runOpenWikiAgent(
     options,
     `openwikiignore.patterns=${openWikiIgnore.patterns.length}`,
   );
+
+  // Before any evidence collection or no-op decision, refuse to run against a
+  // last-update commit git cannot see (the CreditGenie shallow-clone bug): a
+  // missing commit would otherwise read as "no changes" and silently freeze the
+  // wiki. Repository-mode update only; the build-stage tag lets us count it.
+  if (command === "update" && outputMode === "repository") {
+    const lastUpdate = await readLastUpdate(runtimeCwd, outputMode);
+    await inStage("build", () => assertUsableHistory(runtimeCwd, lastUpdate), {
+      errorClass: "build_error",
+      errorDetail: "shallow_history",
+    });
+  }
 
   if (command === "update" && shouldCheckUpdateNoop(options)) {
     const noopStatus = await getUpdateNoopStatus(cwd, openWikiIgnore);
@@ -445,6 +461,14 @@ async function runOpenWikiAgentCore(
           () => createOpenWikiContentSnapshot(cwd, outputMode),
           { errorClass: "build_error", errorDetail: "snapshot" },
         );
+  registerActiveRun({
+    command,
+    cwd,
+    modelId,
+    outputMode,
+    snapshotBefore: openWikiSnapshotBefore ?? undefined,
+    language: context.language,
+  });
   emitDebug(options, "openwiki.snapshot=created");
   const model = inStageSync(
     "build",
@@ -494,6 +518,11 @@ async function runOpenWikiAgentCore(
     ],
   };
 
+  // Watches every model completion for an output-cap finish reason. A capped
+  // stream ends without throwing, so this is how a truncated run is told apart
+  // from a finished one after the loop below.
+  const truncationMonitor = new TruncationMonitor();
+
   emitDebug(options, "stream=opening protocol=events version=v3");
   const stream = await inStage(
     "build",
@@ -503,6 +532,9 @@ async function runOpenWikiAgentCore(
           thread_id: threadId,
         },
         version: "v3",
+        signal: options.signal,
+        callbacks: [truncationMonitor],
+        maxConcurrency: AGENT_MAX_CONCURRENCY,
       }),
     { errorClass: "build_error", errorDetail: "stream_open" },
   );
@@ -529,6 +561,14 @@ async function runOpenWikiAgentCore(
       }
     }
     emitDebug(options, "stream=completed");
+
+    // A capped stream ends without throwing, so check the monitor before
+    // declaring success. Throwing here routes through the same catch that
+    // stamps interrupted runs, which is exactly the semantics we want: the run
+    // is honestly partial and the next update retries the affected pages.
+    if (truncationMonitor.truncated) {
+      throw new TruncationError(truncationMonitor.truncationCount);
+    }
   } catch (error) {
     tagErrorStage(error, "run");
 
@@ -569,6 +609,7 @@ async function runOpenWikiAgentCore(
       threadId,
       options,
     );
+    clearActiveRun();
   }
 
   if (checkpointTarget.persistent) {
@@ -633,6 +674,15 @@ async function cleanupTemporaryPlanFile(
 }
 
 const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
+
+/**
+ * Global bound on concurrently executing runnables inside one agent run
+ * (parallel tool calls, subagent fan-out). The prompt asks for 1-2 subagents
+ * but nothing enforced it; uncapped fan-out multiplies rate-limit exposure on
+ * exactly the long init runs least able to absorb it, and creates the in-flight
+ * promises behind the #494 crash.
+ */
+const AGENT_MAX_CONCURRENCY = 4;
 
 export type CheckpointTarget = {
   connString: string;

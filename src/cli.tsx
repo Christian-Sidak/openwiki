@@ -99,6 +99,9 @@ import {
   withRunTelemetry,
   type RunTelemetryContext,
 } from "./telemetry/index.js";
+import { installCrashGuard } from "./agent/crash-guard.js";
+
+installCrashGuard();
 
 type RunState =
   | { status: "idle" }
@@ -287,6 +290,7 @@ function App({ command }: AppProps) {
     startupModelId,
   );
   const activeRunId = useRef(0);
+  const activeAbortController = useRef<AbortController | null>(null);
   const sessionThreadId = useRef(createOpenWikiThreadId(runtimeCwd));
   const sessionThreadMode = useRef<OpenWikiRunMode>(runMode);
   const mountedRef = useRef(false);
@@ -453,6 +457,8 @@ function App({ command }: AppProps) {
   }
 
   function clearSession() {
+    activeAbortController.current?.abort();
+    activeAbortController.current = null;
     activeRunId.current += 1;
     sessionThreadId.current = createOpenWikiThreadId(runtimeCwd);
     activeRunCredentialDiagnostics.current = undefined;
@@ -556,7 +562,12 @@ function App({ command }: AppProps) {
     const runId = activeRunId.current + 1;
     const runMessage = activeUserMessage;
 
+    // A superseded run is cancelled, not just muted. Before this, the old run
+    // kept executing and writing files alongside its replacement (#499).
+    activeAbortController.current?.abort();
+    activeAbortController.current = new AbortController();
     activeRunId.current = runId;
+
     activeRunCredentialDiagnostics.current = undefined;
     activeRunLog.current = [];
     setRunState({
@@ -616,6 +627,7 @@ function App({ command }: AppProps) {
       threadId: sessionThreadId.current,
       telemetryFile: command.telemetryFile ?? undefined,
       onEvent: handleRunEvent,
+      signal: activeAbortController.current?.signal,
     };
 
     // withRunTelemetry is the single boundary that records this run. It wraps repo
@@ -4170,6 +4182,15 @@ function shouldAutoExitStartupRun(command: CliCommand): boolean {
 async function runPrintCommand(
   command: Extract<CliCommand, { kind: "run" }>,
 ): Promise<void> {
+  // Ctrl+C in --print mode aborts the run cleanly: the stream stops, the error
+  // classifies as "aborted", and the stamp records honest partial progress
+  // instead of dumping a raw stack. Declared here so the finally can remove it.
+  const abortController = new AbortController();
+  const onSigint = (): void => {
+    abortController.abort();
+  };
+  process.once("SIGINT", onSigint);
+
   try {
     const output: string[] = [];
 
@@ -4191,6 +4212,7 @@ async function runPrintCommand(
       threadId: createOpenWikiThreadId(runtimeCwd),
       telemetryFile: command.telemetryFile ?? undefined,
       onEvent: handlePrintEvent,
+      signal: abortController.signal,
     };
 
     // withRunTelemetry is the single boundary that records this run, wrapping repo
@@ -4238,11 +4260,21 @@ async function runPrintCommand(
 
     process.exitCode = 0;
   } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      process.stderr.write(
+        "Run interrupted. Progress was stamped; the next run picks up from it.\n",
+      );
+      process.exitCode = 130;
+      return;
+    }
+
     const message = getErrorMessage(error);
     process.stderr.write(`${message}\n`);
     writePrintAuthFix(error, message);
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
   }
 }
 

@@ -41,6 +41,14 @@ export type OpenWikiRunOptions = {
   threadId?: string;
   userMessage?: string | null;
   telemetryFile?: string;
+
+  /**
+   * Cancels the agent run. Aborted runs stop streaming, classify as
+   * "aborted", and stamp `interrupted` via the normal stream-catch path.
+   *
+   * @default undefined — the run cannot be cancelled externally
+   */
+  signal?: AbortSignal;
 };
 
 export type UpdateRunStatus = "complete" | "interrupted";

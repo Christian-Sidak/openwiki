@@ -242,6 +242,28 @@ describe("taxonomy", () => {
     expect(deriveOwner("filesystem_error", "permission", "build")).toBe(
       "environment",
     );
+    // A shallow CI checkout is the user's to fix; every other build_error is ours.
+    expect(deriveOwner("build_error", "shallow_history", "build")).toBe(
+      "environment",
+    );
+    expect(deriveOwner("build_error", undefined, "build")).toBe("openwiki");
+  });
+
+  test("Phase 0 error details are allowlisted for their families", () => {
+    expect(normalizeErrorDetail("build_error", "shallow_history")).toBe(
+      "shallow_history",
+    );
+    expect(normalizeErrorDetail("output_error", "truncated")).toBe("truncated");
+  });
+
+  test("a TruncationError routes to output_error/truncated by name", () => {
+    const error = new Error("capped mid-generation");
+    error.name = "TruncationError";
+
+    expect(classifyError(error)).toEqual({
+      errorClass: "output_error",
+      errorDetail: "truncated",
+    });
   });
 
   test("normalizeErrorDetail drops anything off the family allowlist", () => {

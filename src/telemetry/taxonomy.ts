@@ -39,10 +39,17 @@ const FIXED_ERROR_DETAILS: Readonly<
     "content_filter",
   ],
   network_error: ["dns", "refused", "reset", "unreachable"],
-  build_error: ["run_context", "snapshot", "model", "agent", "stream_open"],
+  build_error: [
+    "run_context",
+    "snapshot",
+    "model",
+    "agent",
+    "stream_open",
+    "shallow_history",
+  ],
   okf_error: ["migrate", "index_sync", "mermaid"],
   checkpointer_error: ["create", "persist", "chmod"],
-  output_error: ["json_parse", "schema"],
+  output_error: ["json_parse", "schema", "truncated"],
   // No detail split: the family is the whole signal.
   context_limit_error: [],
   agent_error: [],
@@ -76,6 +83,16 @@ const PROVIDER_ENVIRONMENT_DETAILS: ReadonlySet<string> = new Set([
 const NETWORK_ENVIRONMENT_DETAILS: ReadonlySet<string> = new Set([
   "dns",
   "refused",
+]);
+
+/**
+ * Build-error details that are the user's setup rather than our build path, so they
+ * route to `environment` instead of `openwiki`. `shallow_history` is a CI checkout
+ * with truncated git history (the CreditGenie case): the fix is the user adding
+ * `fetch-depth: 0`, not anything we can do.
+ */
+const BUILD_ENVIRONMENT_DETAILS: ReadonlySet<string> = new Set([
+  "shallow_history",
 ]);
 
 /**
@@ -119,6 +136,8 @@ export function normalizeErrorDetail(
  *   machine or network) which are `environment`.
  * - `filesystem_error` is the user's, except at `finalize` (our own wiki write
  *   path) which is `openwiki`.
+ * - `build_error` is ours, except `shallow_history` (a shallow CI checkout the
+ *   user must deepen) which is `environment`.
  *
  * @param errorClass - The failure family.
  * @param detail - The normalized detail, or undefined.
@@ -143,8 +162,11 @@ export function deriveOwner(
       return detail !== undefined && NETWORK_ENVIRONMENT_DETAILS.has(detail)
         ? "environment"
         : "provider";
-    case "context_limit_error":
     case "build_error":
+      return detail !== undefined && BUILD_ENVIRONMENT_DETAILS.has(detail)
+        ? "environment"
+        : "openwiki";
+    case "context_limit_error":
     case "connector_error":
     case "okf_error":
     case "checkpointer_error":

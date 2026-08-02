@@ -194,10 +194,21 @@ export async function writeLastUpdateMetadata(
   language?: string,
 ): Promise<void> {
   const metadataFile = getMetadataFilePath(cwd, outputMode);
+  // An interrupted run must not advance the verified head. It reads back the
+  // prior stamp and keeps that head so the retry re-sweeps the full window the
+  // dead run was processing; advancing here would drop the unprocessed commits
+  // out of the next diff forever.
+  const previous =
+    status === "interrupted" ? await readLastUpdate(cwd, outputMode) : null;
   const metadata: UpdateMetadata = {
     updatedAt: new Date().toISOString(),
     command,
-    gitHead: outputMode === "repository" ? await getGitHead(cwd) : undefined,
+    // Falls back to the current head when there is no prior stamp (a first init
+    // that died before ever recording one).
+    gitHead:
+      outputMode === "repository"
+        ? (previous?.gitHead ?? (await getGitHead(cwd)))
+        : undefined,
     model: modelId,
     status,
     ...(language ? { language } : {}),
@@ -291,7 +302,7 @@ export async function createOpenWikiContentSnapshot(
 /**
  * Reads prior run metadata if it exists and is structurally valid.
  */
-async function readLastUpdate(
+export async function readLastUpdate(
   cwd: string,
   outputMode: OpenWikiOutputMode,
 ): Promise<UpdateMetadata | null> {
@@ -458,7 +469,9 @@ async function createGitSummary(
 
   if (command === "update" && lastUpdate?.gitHead) {
     const logSinceLastHead = filterGitOutputForIgnore(
-      await runGit(cwd, [
+      // Evidence path: a range against a missing commit must throw, not return
+      // git's error text as if it were an empty log.
+      await runGitStrict(cwd, [
         "log",
         `${lastUpdate.gitHead}..HEAD`,
         "--name-status",
@@ -475,7 +488,9 @@ async function createGitSummary(
     );
   } else if (command === "update" && lastUpdate?.updatedAt) {
     const logSinceLastUpdate = filterGitOutputForIgnore(
-      await runGit(cwd, [
+      // Evidence path: this log feeds the update's change reasoning, so a git
+      // failure must surface rather than pass as no commits since last update.
+      await runGitStrict(cwd, [
         "log",
         "--since",
         lastUpdate.updatedAt,
@@ -531,8 +546,14 @@ async function getGitHead(cwd: string): Promise<string | undefined> {
 
 /**
  * Runs git commands without failing the whole run for normal git command errors.
+ *
+ * Swallows exec failures and returns whatever git wrote (including stderr), so a
+ * failed command reads as ordinary output. Correct for display-ish calls whose
+ * worst case is a noisy prompt section, but NOT for evidence the run reasons
+ * over: use {@link runGitStrict} there so a git error cannot masquerade as an
+ * empty diff.
  */
-async function runGit(cwd: string, args: string[]): Promise<string> {
+export async function runGit(cwd: string, args: string[]): Promise<string> {
   try {
     const { stdout, stderr } = await execFileAsync(
       "git",
@@ -554,6 +575,91 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
 
     throw error;
   }
+}
+
+/**
+ * Runs git and reports only whether it succeeded. For plumbing whose answer is
+ * the exit code (`merge-base --is-ancestor`, `cat-file -e`).
+ *
+ * @param cwd - Repository root to run git in.
+ * @param args - Git arguments, a fixed code-constructed array (no shell).
+ * @returns True when git exited zero, false on any failure.
+ */
+export async function runGitCheck(
+  cwd: string,
+  args: string[],
+): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["--no-pager", ...args], { cwd });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Runs git and throws on failure instead of returning stderr as output.
+ * Evidence-path calls (diffs, logs that feed prompts or verdicts) MUST use this:
+ * a fast-forward or "no changes" conclusion is only sound over a diff git
+ * actually produced (the CreditGenie shallow-clone bug, where a missing commit's
+ * error text flowed in as an empty diff and silently froze the wiki).
+ *
+ * @param cwd - Repository root to run git in.
+ * @param args - Git arguments, a fixed code-constructed array (no shell).
+ * @returns The trimmed stdout git produced.
+ */
+export async function runGitStrict(
+  cwd: string,
+  args: string[],
+): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["--no-pager", ...args], {
+    cwd,
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout.trim();
+}
+
+/**
+ * Fails loudly when the last-update commit is not present locally, instead of
+ * letting evidence collection run against a commit git has never heard of. The
+ * usual cause is a CI checkout with the default fetch-depth of 1; the other is a
+ * rebase that erased the commit. Doing nothing when there is no prior stamp (a
+ * first init) or no recorded head is correct: there is nothing to diff against.
+ *
+ * @param cwd - Repository root to check.
+ * @param lastUpdate - The prior run's metadata, or null when none exists.
+ * @throws When the recorded gitHead is missing locally, with the exact fix.
+ */
+export async function assertUsableHistory(
+  cwd: string,
+  lastUpdate: UpdateMetadata | null,
+): Promise<void> {
+  if (!lastUpdate?.gitHead) {
+    return;
+  }
+
+  const exists = await runGitCheck(cwd, [
+    "cat-file",
+    "-e",
+    `${lastUpdate.gitHead}^{commit}`,
+  ]);
+
+  if (exists) {
+    return;
+  }
+
+  const shallow =
+    (await runGit(cwd, ["rev-parse", "--is-shallow-repository"])) === "true";
+
+  throw new Error(
+    shallow
+      ? `This checkout is shallow and does not contain the last-update commit ` +
+          `(${lastUpdate.gitHead}). Set "fetch-depth: 0" on actions/checkout in ` +
+          `your OpenWiki workflow so updates can diff against it.`
+      : `The last-update commit (${lastUpdate.gitHead}) no longer exists in ` +
+          `this repository (rebased away?). Delete openwiki/.last-update.json ` +
+          `and re-run to rebuild from current state.`,
+  );
 }
 
 function formatGitSection(command: string, output: string): string {
@@ -584,7 +690,13 @@ async function getChangedPathsSinceLastUpdate(
   cwd: string,
   gitHead: string,
 ): Promise<string[]> {
-  const diff = await runGit(cwd, ["diff", "--name-only", `${gitHead}..HEAD`]);
+  // Evidence path: this diff decides whether the wiki is stale, so a git error
+  // must throw rather than read back as an empty (unchanged) result.
+  const diff = await runGitStrict(cwd, [
+    "diff",
+    "--name-only",
+    `${gitHead}..HEAD`,
+  ]);
 
   return diff
     .split("\n")

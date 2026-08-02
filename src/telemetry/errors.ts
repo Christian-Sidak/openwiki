@@ -78,6 +78,10 @@ export function classifyError(error: unknown): ErrorClassification {
     return { errorClass: "aborted" };
   }
 
+  if (error instanceof Error && error.name === "TruncationError") {
+    return { errorClass: "output_error", errorDetail: "truncated" };
+  }
+
   const providerCode = extractProviderErrorCode(error);
   if (providerCode && providerCode in PROVIDER_ERROR_CODES) {
     return PROVIDER_ERROR_CODES[providerCode];
