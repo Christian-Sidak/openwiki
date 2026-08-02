@@ -106,6 +106,30 @@ describe("installCrashGuard", () => {
     expect(getActiveRun()).toBeUndefined();
   });
 
+  test("stamps and records once when a fatal cascade fires several rejections", async () => {
+    // Reproduces a double-fire seen during a live `--init --print` run against
+    // the real openwiki checkout (not the synthetic fixture): a subagent
+    // connection error and its downstream failure both reached the process-level
+    // handler in the same tick. Before the synchronous clearActiveRun claim, the
+    // second rejection still saw the active run and stamped + recorded a second
+    // time, double-counting one dead run in telemetry.
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+
+    registerActiveRun(RUN);
+    installCrashGuard();
+
+    process.emit("uncaughtException", new Error("Connection error."));
+    process.emit("uncaughtException", new Error("Subagent general-purpose failed"));
+
+    await vi.waitFor(() => expect(exitSpy).toHaveBeenCalledWith(1));
+
+    expect(persistRunMetadataIfChanged).toHaveBeenCalledTimes(1);
+    expect(recordRunSafe).toHaveBeenCalledTimes(1);
+    expect(getActiveRun()).toBeUndefined();
+  });
+
   test("exits without stamping when no run is active", async () => {
     const exitSpy = vi
       .spyOn(process, "exit")

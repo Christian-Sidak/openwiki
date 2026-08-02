@@ -102,6 +102,13 @@ async function handleFatal(source: string, error: unknown): Promise<void> {
   const active = getActiveRun();
 
   if (active) {
+    // Claim the run synchronously, before the first await. A fatal cascade often
+    // produces several rejections in the same tick (a subagent connection error
+    // plus its downstream failure); clearing here means a second one sees no
+    // active run and skips the stamp and telemetry below, so one dead run is
+    // recorded once, not once per rejection.
+    clearActiveRun();
+
     // Swallow stamp failures: the original crash is the story worth exiting with.
     try {
       await persistRunMetadataIfChanged(
@@ -127,8 +134,6 @@ async function handleFatal(source: string, error: unknown): Promise<void> {
       { outputMode: active.outputMode },
       { outcome: "failure", ...describeErrorForTelemetry(error) },
     );
-
-    clearActiveRun();
   }
 
   const message = error instanceof Error ? error.message : String(error);
