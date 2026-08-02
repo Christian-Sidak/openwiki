@@ -4273,6 +4273,9 @@ async function runPrintCommand(
   const abortController = new AbortController();
   const onSigint = (): void => {
     abortController.abort();
+    // Tell the user the run is checkpointing rather than exiting on a bare ^C.
+    // stderr keeps stdout reserved for wiki content.
+    process.stderr.write("Interrupting, writing a recovery checkpoint...\n");
   };
   process.once("SIGINT", onSigint);
 
@@ -4346,8 +4349,10 @@ async function runPrintCommand(
     process.exitCode = 0;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      // Ctrl+C exits quietly: the shell already echoes ^C, and exit 130 signals
-      // the interruption to any caller.
+      // Ctrl+C: confirm the checkpoint landed and exit 130 so any caller sees
+      // the interruption. The graceful catch in the agent has already stamped
+      // and removed the plan file by the time this branch runs.
+      process.stderr.write("Interrupted; wrote a recovery checkpoint.\n");
       process.exitCode = 130;
       return;
     }
