@@ -1,8 +1,10 @@
+import { getErrorMessage, sanitizeDiagnosticText } from "../diagnostics.js";
 import { describeErrorForTelemetry } from "../telemetry/errors.js";
 import { recordRunSafe } from "../telemetry/record-run-safe.js";
 import type { OpenWikiCommand, OpenWikiOutputMode } from "./types.js";
 import {
   persistRunMetadataIfChanged,
+  removeTemporaryPlanFile,
   type OpenWikiContentSnapshot,
 } from "./utils.js";
 
@@ -53,6 +55,14 @@ export interface ActiveRunRecord {
 let activeRun: ActiveRunRecord | undefined;
 
 /**
+ * Latches when the first fatal signal begins shutdown. A crash commonly
+ * cascades into several rejections in the same tick; only the first drives
+ * cleanup and the single process exit, so a later one cannot schedule an exit
+ * that preempts the in-flight cleanup writes.
+ */
+let shutdownStarted = false;
+
+/**
  * Registers the run the process is currently executing. One at a time by
  * design.
  */
@@ -84,6 +94,11 @@ export function getActiveRun(): ActiveRunRecord | undefined {
  * Install exactly once, before any run starts.
  */
 export function installCrashGuard(): void {
+  // Installing (re)initializes shutdown state. Production installs exactly once
+  // at startup, so this is a no-op there; it only matters to tests that
+  // reinstall the guard and need a clean latch each time.
+  shutdownStarted = false;
+
   process.on("unhandledRejection", (reason) => {
     void handleFatal("unhandledRejection", reason);
   });
@@ -93,23 +108,53 @@ export function installCrashGuard(): void {
 }
 
 /**
- * Shared post-mortem for both fatal signals: stamps the active run
- * `interrupted` (best-effort), records the crash to the telemetry boundary
- * (fire-and-forget, so the exit never waits on it), prints one readable line,
- * and exits non-zero. `source` names which handler fired, for the stderr line.
+ * Shared post-mortem for both fatal signals. Prints one readable, redacted line
+ * for every signal, then — for the first signal only — cleans up the run the
+ * same way the graceful catch does (drops the temporary plan file, stamps the
+ * run `interrupted` so the next scheduled update retries instead of no-opping
+ * against a partial wiki), records the crash to the telemetry boundary
+ * (fire-and-forget), and exits non-zero.
+ *
+ * A crash commonly cascades into several rejections in the same tick (a
+ * subagent's aborted connection plus its "Subagent ... failed" projection).
+ * The `shutdownStarted` latch makes only the first drive cleanup and the single
+ * exit; a later one prints and returns, so its exit cannot fire before the
+ * awaited cleanup finishes writing. `source` names which handler fired.
  */
 async function handleFatal(source: string, error: unknown): Promise<void> {
+  // Print every fatal in a cascade so all of its causes stay visible, even the
+  // ones that do not drive shutdown below. getErrorMessage redacts secrets.
+  process.stderr.write(
+    `OpenWiki run failed (${source}): ${getErrorMessage(error)}\n`,
+  );
+
+  if (error instanceof Error && error.stack && process.env.OPENWIKI_DEBUG) {
+    process.stderr.write(`${sanitizeDiagnosticText(error.stack)}\n`);
+  }
+
+  // Only the first fatal owns shutdown. Returning here for later rejections in
+  // the same cascade is what keeps their setImmediate exit from preempting the
+  // cleanup writes below and losing the interrupted stamp.
+  if (shutdownStarted) {
+    return;
+  }
+  shutdownStarted = true;
+
   const active = getActiveRun();
 
   if (active) {
-    // Claim the run synchronously, before the first await. A fatal cascade often
-    // produces several rejections in the same tick (a subagent connection error
-    // plus its downstream failure); clearing here means a second one sees no
-    // active run and skips the stamp and telemetry below, so one dead run is
-    // recorded once, not once per rejection.
     clearActiveRun();
 
-    // Swallow stamp failures: the original crash is the story worth exiting with.
+    // Mirror the graceful catch so a crash-path interrupt leaves the same state
+    // as a thrown one: no orphaned _plan.md, and an `interrupted` stamp. Both
+    // are awaited before the exit; both swallow their own failures so the
+    // original crash is still the story the process exits with.
+    try {
+      await removeTemporaryPlanFile(active.cwd, active.outputMode);
+    } catch {
+      // ignored
+    }
+
     try {
       await persistRunMetadataIfChanged(
         active.command,
@@ -128,19 +173,12 @@ async function handleFatal(source: string, error: unknown): Promise<void> {
 
     // Hand the crash to the single telemetry boundary so runs that die outside
     // every catch finally appear in the data (#494). Strictly fire-and-forget:
-    // recordRunSafe never throws and the exit below must not wait on it.
+    // recordRunSafe never throws and the exit below must not wait on the network.
     void recordRunSafe(
       active.command,
       { outputMode: active.outputMode },
       { outcome: "failure", ...describeErrorForTelemetry(error) },
     );
-  }
-
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`OpenWiki run failed (${source}): ${message}\n`);
-
-  if (error instanceof Error && error.stack && process.env.OPENWIKI_DEBUG) {
-    process.stderr.write(`${error.stack}\n`);
   }
 
   // Give stderr a tick to flush, then exit non-zero. Without the explicit exit

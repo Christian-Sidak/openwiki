@@ -77,6 +77,57 @@ describe("persistRunMetadataIfChanged", () => {
     expect(metadata?.status).toBe("interrupted");
   });
 
+  test("records status interrupted even when wiki content is unchanged", async () => {
+    const cwd = await createTempRepo();
+
+    await mkdir(path.join(cwd, "openwiki"), { recursive: true });
+    await writeFile(path.join(cwd, "openwiki", "index.md"), "# Docs\n", "utf8");
+    // The snapshot is taken over the same content the interrupt sees, so the
+    // content-unchanged skip that applies to completed runs must not suppress
+    // the interrupted record.
+    const snapshotBefore = await createOpenWikiContentSnapshot(
+      cwd,
+      "repository",
+    );
+
+    const written = await persistRunMetadataIfChanged(
+      "update",
+      cwd,
+      "test-model",
+      "repository",
+      snapshotBefore,
+      "interrupted",
+    );
+
+    expect(written).toBe(true);
+    const metadata = await readMetadata(cwd, "openwiki/.last-update.json");
+    expect(metadata?.status).toBe("interrupted");
+  });
+
+  test("records status interrupted for a wiki that was never generated", async () => {
+    const cwd = await createTempRepo();
+    // The earliest interrupt: the run is aborted before any page lands, so the
+    // wiki is empty and equal to its pre-run snapshot. The stamp must still be
+    // written so the next update retries instead of trusting an empty wiki.
+    const snapshotBefore = await createOpenWikiContentSnapshot(
+      cwd,
+      "repository",
+    );
+
+    const written = await persistRunMetadataIfChanged(
+      "init",
+      cwd,
+      "test-model",
+      "repository",
+      snapshotBefore,
+      "interrupted",
+    );
+
+    expect(written).toBe(true);
+    const metadata = await readMetadata(cwd, "openwiki/.last-update.json");
+    expect(metadata?.status).toBe("interrupted");
+  });
+
   test("clears an interrupted status when a completed run changes nothing", async () => {
     const cwd = await createTempRepo();
 

@@ -291,6 +291,25 @@ function App({ command }: AppProps) {
   );
   const activeRunId = useRef(0);
   const activeAbortController = useRef<AbortController | null>(null);
+
+  /**
+   * The settle promise for the in-flight run's full handler chain.
+   *
+   * Ctrl+C aborts the run and then waits on this so the process exits only
+   * after the agent's interrupt cleanup (remove `_plan.md`, write the
+   * `interrupted` stamp) has finished. Null when no run is in flight.
+   */
+  const activeRunPromise = useRef<Promise<unknown> | null>(null);
+
+  /**
+   * Latched once Ctrl+C has begun the interrupt-and-checkpoint shutdown.
+   *
+   * A ref (not just state) so the run's `.then`/`.catch` handlers and repeat
+   * Ctrl+C presses read it synchronously, without waiting for a re-render. Once
+   * true, further Ctrl+C presses are no-ops so an impatient second tap cannot
+   * bypass the checkpoint and hard-kill the process.
+   */
+  const shuttingDownRef = useRef(false);
   const sessionThreadId = useRef(createOpenWikiThreadId(runtimeCwd));
   const sessionThreadMode = useRef<OpenWikiRunMode>(runMode);
   const mountedRef = useRef(false);
@@ -301,6 +320,16 @@ function App({ command }: AppProps) {
   >(undefined);
   const activeRunLog = useRef<RunLogItem[]>([]);
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
+
+  /**
+   * Whether Ctrl+C has started the interrupt-and-checkpoint shutdown.
+   *
+   * Drives the "writing a recovery checkpoint" notice. Mirrors
+   * {@link shuttingDownRef}, which carries the same fact for synchronous reads
+   * in the input handler and run-settle guards.
+   */
+  const [shuttingDown, setShuttingDown] = useState(false);
+
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([]);
   const [activeUserMessage, setActiveUserMessage] = useState<string | null>(
     command.kind === "run" ? command.userMessage : null,
@@ -635,7 +664,10 @@ function App({ command }: AppProps) {
     // pre-agent step is recorded rather than reaching only the UI catch below.
     const telemetryContext: RunTelemetryContext = {};
 
-    withRunTelemetry(
+    // Stored so the Ctrl+C handler can wait for this run's cleanup (interrupt
+    // stamp + `_plan.md` removal, which happen inside the agent before the
+    // chain settles) before exiting the process.
+    activeRunPromise.current = withRunTelemetry(
       resolvedCommand,
       runOptions,
       telemetryContext,
@@ -667,7 +699,11 @@ function App({ command }: AppProps) {
       },
     )
       .then((result) => {
-        if (!mountedRef.current || activeRunId.current !== runId) {
+        if (
+          !mountedRef.current ||
+          activeRunId.current !== runId ||
+          shuttingDownRef.current
+        ) {
           return;
         }
 
@@ -691,7 +727,11 @@ function App({ command }: AppProps) {
         nextCompletedRunId.current += 1;
       })
       .catch((error: unknown) => {
-        if (!mountedRef.current || activeRunId.current !== runId) {
+        if (
+          !mountedRef.current ||
+          activeRunId.current !== runId ||
+          shuttingDownRef.current
+        ) {
           return;
         }
 
@@ -764,6 +804,42 @@ function App({ command }: AppProps) {
       app.exit();
     }
   }, [app, autoExitOnSuccess, runState]);
+
+  // Ctrl+C is handled here rather than by Ink's exitOnCtrlC (disabled at
+  // render). Ink's default merely unmounts the UI, leaving an in-flight run
+  // executing detached and skipping the interrupt stamp. Instead we abort the
+  // run so the agent's cleanup (remove `_plan.md`, write the `interrupted`
+  // stamp) runs, and exit only once that has settled.
+  useInput((inputValue, key) => {
+    if (!key.ctrl || inputValue !== "c") {
+      return;
+    }
+
+    if (shuttingDownRef.current) {
+      // Already checkpointing; ignore repeat taps so an impatient second press
+      // cannot bypass the checkpoint and hard-kill the process.
+      return;
+    }
+
+    const controller = activeAbortController.current;
+    if (controller && runState.status === "running") {
+      shuttingDownRef.current = true;
+      setShuttingDown(true);
+      controller.abort();
+      // The interrupt owns the exit code; the run's cleanup runs inside the
+      // agent before this promise settles, so exit only once it has.
+      process.exitCode = 130;
+      const pending = activeRunPromise.current ?? Promise.resolve();
+      void pending.finally(() => {
+        app.exit();
+      });
+      return;
+    }
+
+    // No interruptible run in flight: exit immediately, as Ink's default did.
+    process.exitCode = 130;
+    app.exit();
+  });
 
   if (command.kind === "help") {
     return <HelpView />;
@@ -921,6 +997,11 @@ function App({ command }: AppProps) {
           message={activeUserMessage}
           modelId={displayModelId}
         />
+        {shuttingDown ? (
+          <Text color="yellow">
+            Interrupting, writing a recovery checkpoint...
+          </Text>
+        ) : null}
       </Box>
     );
   }
@@ -3799,6 +3880,10 @@ if (command.kind === "auth") {
       {showFirstRunNotice ? <FirstRunNotice /> : null}
       <App command={command} />
     </>,
+    // Ctrl+C is handled in <App>'s input handler so an in-flight run is aborted
+    // and checkpointed; Ink's default (unmount without aborting the run) would
+    // leave the run executing detached and skip the interrupt stamp.
+    { exitOnCtrlC: false },
   );
 }
 
@@ -4261,9 +4346,8 @@ async function runPrintCommand(
     process.exitCode = 0;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      process.stderr.write(
-        "Run interrupted. Progress was stamped; the next run picks up from it.\n",
-      );
+      // Ctrl+C exits quietly: the shell already echoes ^C, and exit 130 signals
+      // the interruption to any caller.
       process.exitCode = 130;
       return;
     }

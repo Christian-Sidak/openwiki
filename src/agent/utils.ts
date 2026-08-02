@@ -223,9 +223,12 @@ export async function writeLastUpdateMetadata(
 }
 
 /**
- * Persists run metadata when OpenWiki content changed since the given snapshot.
- * Returns whether metadata was written. Used after both successful and failed
- * runs so already-generated content stays diffable by future updates.
+ * Persists run metadata after a run ends. Returns whether metadata was written.
+ *
+ * An interrupted run always writes its stamp so the next update sees status
+ * "interrupted" and retries. A completed run writes only when content changed
+ * since the given snapshot (or to clear a prior interrupted status), which keeps
+ * repeating no-op runs from churning the stamp. Chat runs never write.
  */
 export async function persistRunMetadataIfChanged(
   command: OpenWikiCommand,
@@ -236,18 +239,30 @@ export async function persistRunMetadataIfChanged(
   status: UpdateRunStatus = "complete",
   language?: string,
 ): Promise<boolean> {
-  if (command === "chat" || snapshotBefore === null) {
+  if (command === "chat") {
     return false;
   }
 
-  if (
-    snapshotBefore === (await createOpenWikiContentSnapshot(cwd, outputMode))
-  ) {
-    // A completed run clears a previous interrupted status even when the
-    // content did not change, so the update no-op check can skip again.
-    const lastUpdate = await readLastUpdate(cwd, outputMode);
-    if (status !== "complete" || lastUpdate?.status !== "interrupted") {
+  // An interrupted run is always recorded, even when it produced no new content
+  // yet (the earliest, most dangerous interrupt: an empty or partial wiki). The
+  // stamp is the record that the last attempt did not finish, so the next
+  // update sees status "interrupted" and retries instead of trusting the wiki.
+  // Only a completed run takes the unchanged-content skip, which exists to avoid
+  // spurious .last-update.json churn on repeating no-op runs.
+  if (status === "complete") {
+    if (snapshotBefore === null) {
       return false;
+    }
+
+    if (
+      snapshotBefore === (await createOpenWikiContentSnapshot(cwd, outputMode))
+    ) {
+      // A completed run still rewrites when it clears a previous interrupted
+      // status, so the update no-op check can skip again.
+      const lastUpdate = await readLastUpdate(cwd, outputMode);
+      if (lastUpdate?.status !== "interrupted") {
+        return false;
+      }
     }
   }
 
