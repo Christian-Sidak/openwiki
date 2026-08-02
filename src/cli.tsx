@@ -4271,13 +4271,24 @@ async function runPrintCommand(
   // classifies as "aborted", and the stamp records honest partial progress
   // instead of dumping a raw stack. Declared here so the finally can remove it.
   const abortController = new AbortController();
+  // Guard so a second Ctrl+C during the checkpoint window is a no-op instead of
+  // Node's default SIGINT kill, mirroring the interactive path's shuttingDownRef.
+  // A truly wedged run stays escapable with Ctrl+\ (SIGQUIT).
+  let shuttingDown = false;
   const onSigint = (): void => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
     abortController.abort();
     // Tell the user the run is checkpointing rather than exiting on a bare ^C.
     // stderr keeps stdout reserved for wiki content.
     process.stderr.write("Interrupting, writing a recovery checkpoint...\n");
   };
-  process.once("SIGINT", onSigint);
+  // Persistent listener (not once) so repeat taps reach the guard above rather
+  // than finding no handler and hard-killing mid-checkpoint. Removed in finally.
+  process.on("SIGINT", onSigint);
 
   try {
     const output: string[] = [];
