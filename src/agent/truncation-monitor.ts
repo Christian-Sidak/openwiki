@@ -14,9 +14,6 @@ export class TruncationError extends Error {
    */
   override name = "TruncationError";
 
-  /**
-   * @param count - How many responses in the run ended on the output cap.
-   */
   constructor(count: number) {
     super(
       `${count} model response(s) hit the output-token cap mid-generation. ` +
