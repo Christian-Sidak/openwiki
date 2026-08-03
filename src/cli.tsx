@@ -4287,17 +4287,13 @@ async function runPrintCommand(
     // signal. stderr keeps stdout reserved for wiki content.
     process.stderr.write("Interrupting, writing a recovery checkpoint...\n");
   };
-  // Trap the catchable termination signals a run realistically receives, not
-  // just Ctrl+C: CI cancellations and timeouts usually deliver SIGTERM, and a
-  // closed controlling terminal delivers SIGHUP. Handling them is what makes an
-  // interrupted CI run checkpoint instead of dropping the run; SIGKILL stays
-  // uncatchable by design. Persistent listeners (not once) so repeat signals
-  // reach the guard above rather than finding no handler and hard-killing
-  // mid-checkpoint.
-  const interruptSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  for (const signal of interruptSignals) {
-    process.on(signal, onInterruptSignal);
-  }
+  // Trap Ctrl+C only. Other terminations (SIGTERM from a CI cancel/timeout,
+  // SIGHUP from a closed terminal) need no handler: durable state lives in the
+  // manifest, written atomically before and after every unit, so a run that
+  // dies on any signal is already recoverable by the next run. A persistent
+  // listener (not once) so a repeat Ctrl+C during the checkpoint window reaches
+  // the guard above rather than finding no handler and hard-killing.
+  process.on("SIGINT", onInterruptSignal);
 
   try {
     const output: string[] = [];
@@ -4383,9 +4379,7 @@ async function runPrintCommand(
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
   } finally {
-    for (const signal of interruptSignals) {
-      process.removeListener(signal, onInterruptSignal);
-    }
+    process.removeListener("SIGINT", onInterruptSignal);
   }
 }
 
