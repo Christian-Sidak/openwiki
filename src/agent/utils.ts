@@ -736,7 +736,12 @@ async function getChangedPathsSinceLastUpdate(
     .filter(Boolean);
 }
 
-function isOpenWikiPath(changedPath: string): boolean {
+/**
+ * True when a repo-relative path is inside the wiki's own directory. Used to
+ * drop wiki-internal paths from change evidence, since the wiki documenting
+ * itself is not a source change.
+ */
+export function isOpenWikiPath(changedPath: string): boolean {
   return (
     changedPath === OPEN_WIKI_DIR || changedPath.startsWith(`${OPEN_WIKI_DIR}/`)
   );
