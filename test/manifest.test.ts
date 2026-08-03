@@ -9,7 +9,7 @@ import {
   compileGlob,
   filterMatching,
   matchesAny,
-} from "../src/agent/manifest/glob.ts";
+} from "../src/agent/reconcile/glob.ts";
 import {
   ManifestValidationError,
   getManifestPath,

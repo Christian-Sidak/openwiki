@@ -3,8 +3,8 @@ import { OpenWikiIgnore } from "../src/agent/openwiki-ignore.ts";
 import {
   gatherRepoEvidence,
   type RepoEvidence,
-} from "../src/agent/manifest/evidence.ts";
-import { computeVerdicts } from "../src/agent/manifest/reconcile.ts";
+} from "../src/agent/reconcile/evidence.ts";
+import { computeVerdicts } from "../src/agent/reconcile/reconcile.ts";
 import type {
   ManifestSection,
   OpenWikiManifest,

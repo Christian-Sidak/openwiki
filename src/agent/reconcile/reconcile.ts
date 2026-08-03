@@ -1,7 +1,7 @@
 import type { OpenWikiIgnore } from "../openwiki-ignore.js";
 import { gatherRepoEvidence, type RepoEvidence } from "./evidence.js";
 import { compileGlob } from "./glob.js";
-import type { ManifestSection, OpenWikiManifest } from "./types.js";
+import type { ManifestSection, OpenWikiManifest } from "../manifest/types.js";
 
 /**
  * What one section needs this run.
