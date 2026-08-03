@@ -4267,28 +4267,37 @@ function shouldAutoExitStartupRun(command: CliCommand): boolean {
 async function runPrintCommand(
   command: Extract<CliCommand, { kind: "run" }>,
 ): Promise<void> {
-  // Ctrl+C in --print mode aborts the run cleanly: the stream stops, the error
-  // classifies as "aborted", and the stamp records honest partial progress
-  // instead of dumping a raw stack. Declared here so the finally can remove it.
+  // An interrupt signal in --print mode aborts the run cleanly: the stream
+  // stops, the error classifies as "aborted", and the stamp records honest
+  // partial progress instead of dumping a raw stack. Listeners are removed in
+  // the finally.
   const abortController = new AbortController();
-  // Guard so a second Ctrl+C during the checkpoint window is a no-op instead of
-  // Node's default SIGINT kill, mirroring the interactive path's shuttingDownRef.
-  // A truly wedged run stays escapable with Ctrl+\ (SIGQUIT).
+  // Guard so a repeat signal during the checkpoint window is a no-op instead of
+  // Node's default kill, mirroring the interactive path's shuttingDownRef. A
+  // truly wedged run stays escapable with Ctrl+\ (SIGQUIT) or SIGKILL.
   let shuttingDown = false;
-  const onSigint = (): void => {
+  const onInterruptSignal = (): void => {
     if (shuttingDown) {
       return;
     }
 
     shuttingDown = true;
     abortController.abort();
-    // Tell the user the run is checkpointing rather than exiting on a bare ^C.
-    // stderr keeps stdout reserved for wiki content.
+    // Tell the user the run is checkpointing rather than exiting on a bare
+    // signal. stderr keeps stdout reserved for wiki content.
     process.stderr.write("Interrupting, writing a recovery checkpoint...\n");
   };
-  // Persistent listener (not once) so repeat taps reach the guard above rather
-  // than finding no handler and hard-killing mid-checkpoint. Removed in finally.
-  process.on("SIGINT", onSigint);
+  // Trap the catchable termination signals a run realistically receives, not
+  // just Ctrl+C: CI cancellations and timeouts usually deliver SIGTERM, and a
+  // closed controlling terminal delivers SIGHUP. Handling them is what makes an
+  // interrupted CI run checkpoint instead of dropping the run; SIGKILL stays
+  // uncatchable by design. Persistent listeners (not once) so repeat signals
+  // reach the guard above rather than finding no handler and hard-killing
+  // mid-checkpoint.
+  const interruptSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  for (const signal of interruptSignals) {
+    process.on(signal, onInterruptSignal);
+  }
 
   try {
     const output: string[] = [];
@@ -4360,9 +4369,9 @@ async function runPrintCommand(
     process.exitCode = 0;
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
-      // Ctrl+C: confirm the checkpoint landed and exit 130 so any caller sees
-      // the interruption. The graceful catch in the agent has already stamped
-      // and removed the plan file by the time this branch runs.
+      // An interrupt signal aborted the run: confirm the checkpoint landed and
+      // exit 130 so any caller sees the interruption. The graceful catch in the
+      // agent has already stamped and removed the plan file by this point.
       process.stderr.write("Interrupted; wrote a recovery checkpoint.\n");
       process.exitCode = 130;
       return;
@@ -4374,7 +4383,9 @@ async function runPrintCommand(
     writePrintErrorDiagnostics(error);
     process.exitCode = 1;
   } finally {
-    process.removeListener("SIGINT", onSigint);
+    for (const signal of interruptSignals) {
+      process.removeListener(signal, onInterruptSignal);
+    }
   }
 }
 
