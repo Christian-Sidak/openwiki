@@ -94,6 +94,15 @@ async function getCommittedChanges(
 }
 
 /**
+ * The status field `git status --porcelain` prefixes each path with. Two
+ * characters wide normally, but only one on the first line of a trimmed run:
+ * runGitStrict strips the leading space of an unstaged-only status such as
+ * " M src/api/server.ts", so a fixed-width slice would eat the path's first
+ * character. Mirrors GIT_STATUS_LINE_PATTERN in utils.ts.
+ */
+const PORCELAIN_PATH_PATTERN = /^[ !?ACDMRTUXB]{1,2} (.+)$/u;
+
+/**
  * Worktree changes from `git status --porcelain`, both sides of renames.
  */
 async function getDirtyPaths(cwd: string): Promise<string[]> {
@@ -102,7 +111,9 @@ async function getDirtyPaths(cwd: string): Promise<string[]> {
   return output
     .split("\n")
     .filter(Boolean)
-    .flatMap((line) => line.slice(3).split(" -> "));
+    .flatMap((line) =>
+      (PORCELAIN_PATH_PATTERN.exec(line)?.[1] ?? line).split(" -> "),
+    );
 }
 
 /**

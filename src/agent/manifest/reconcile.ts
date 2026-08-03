@@ -69,11 +69,11 @@ export async function computeVerdicts(
       verdicts.push({ kind: "missing", section });
       continue;
     }
-    if (section.head === evidence.runHead) {
-      verdicts.push({ kind: "fast-forward", section });
-      continue;
-    }
 
+    // No short-circuit when section.head === runHead: the committed diff is
+    // empty there, but changedSince still folds in dirtyPaths, so an
+    // uncommitted edit to an otherwise up-to-date section is caught rather
+    // than passed over as fast-forward.
     const changed = await evidence.changedSince(section.head);
     const compiled = section.sources.map(compileGlob);
     const changedFiles = changed.filter((path) =>

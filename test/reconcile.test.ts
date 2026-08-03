@@ -100,10 +100,11 @@ describe("computeVerdicts (injected evidence)", () => {
     expect(wouldBeStale.verdicts[0].kind).toBe("abandoned");
   });
 
-  test("head === runHead short-circuits to fast-forward without diffing", async () => {
-    // changedSince for this head WOULD report a matching change; the
-    // short-circuit must fire first, so the verdict is fast-forward, not stale.
-    const { evidence, queried } = makeEvidence({
+  test("head === runHead with a matching dirty change is stale, not fast-forward", async () => {
+    // changedSince folds dirtyPaths into every head's result, so a section
+    // pinned at the run head is still stale when an uncommitted edit touches
+    // its sources. There is no short-circuit that would skip that check.
+    const { evidence } = makeEvidence({
       runHead: "RH",
       changedByHead: { RH: ["src/a/x.ts"] },
     });
@@ -113,13 +114,24 @@ describe("computeVerdicts (injected evidence)", () => {
       evidence,
     );
 
-    expect(result.verdicts[0].kind).toBe("fast-forward");
-    // The per-section verdict path never queried; the only RH query, if any,
-    // would come from the unclaimed scan. Here writtenHeads = [RH], and unclaimed
-    // does query it, so we assert the verdict outcome rather than call counts.
-    expect(queried.filter((head) => head === "RH").length).toBeLessThanOrEqual(
-      1,
+    expect(result.verdicts[0].kind).toBe("stale");
+    if (result.verdicts[0].kind === "stale") {
+      expect(result.verdicts[0].changedFiles).toEqual(["src/a/x.ts"]);
+    }
+  });
+
+  test("head === runHead with no matching change is fast-forward", async () => {
+    const { evidence } = makeEvidence({
+      runHead: "RH",
+      changedByHead: { RH: ["src/b/y.ts"] },
+    });
+
+    const result = await computeVerdicts(
+      manifest([section({ head: "RH", sources: ["src/a/**"] })]),
+      evidence,
     );
+
+    expect(result.verdicts[0].kind).toBe("fast-forward");
   });
 
   test("stale carries exactly the changed files intersecting its sources", async () => {
@@ -269,6 +281,20 @@ describe("gatherRepoEvidence parsing (mocked git)", () => {
       "src/new.ts",
       "src/c.ts",
       "src/d.ts",
+    ]);
+  });
+
+  test("a trimmed leading-space first status line keeps its full path", async () => {
+    // runGitStrict trims, stripping the leading space of an unstaged-only
+    // first line (" M path" -> "M path"). Parsing must survive the 1-char
+    // status field and not eat the path's first character.
+    stubGit({ porcelain: "M src/api/server.ts\n M src/api/other.ts" });
+
+    const evidence = await gatherRepoEvidence("/repo", noIgnore);
+
+    expect(evidence.dirtyPaths).toEqual([
+      "src/api/server.ts",
+      "src/api/other.ts",
     ]);
   });
 
