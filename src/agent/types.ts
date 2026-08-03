@@ -51,16 +51,54 @@ export type OpenWikiRunOptions = {
   signal?: AbortSignal;
 };
 
-export type UpdateRunStatus = "complete" | "interrupted";
+export type UpdateRunStatus = "complete" | "interrupted" | "partial";
 
-export type UpdateMetadata = {
+export interface UpdateMetadata {
+  /**
+   * ISO 8601 timestamp of when this stamp was written.
+   */
   updatedAt: string;
+
+  /**
+   * The command that produced this stamp (init or update).
+   */
   command: OpenWikiCommand;
+
+  /**
+   * Repository head the wiki is verified against.
+   *
+   * @default undefined — local-wiki runs record no repository head
+   */
   gitHead?: string;
+
+  /**
+   * Model identifier that generated the wiki content for this run.
+   */
   model: string;
+
+  /**
+   * Outcome of the run that wrote this stamp.
+   *
+   * @default undefined — legacy stamps (pre-#365) omit it and are treated as
+   * complete
+   */
   status?: UpdateRunStatus;
+
+  /**
+   * Effective wiki output language.
+   *
+   * @default undefined — the wiki uses the default (English) output language
+   */
   language?: string;
-};
+
+  /**
+   * Section paths given up on after repeated attributable failures. Excluded
+   * from the floor.
+   *
+   * @default undefined — no sections have been abandoned
+   */
+  abandoned?: string[];
+}
 
 export type RunContext = {
   lastUpdate: UpdateMetadata | null;

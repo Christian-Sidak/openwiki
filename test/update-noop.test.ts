@@ -138,7 +138,20 @@ describe("getUpdateNoopStatus", () => {
 
     expect(status).toEqual({
       shouldSkip: false,
-      reason: "previous update was interrupted",
+      reason: "previous run was interrupted",
+    });
+  });
+
+  test("does not skip update when the previous run was partial", async () => {
+    const repo = await createRepoWithOpenWiki();
+    const head = await git(repo, ["rev-parse", "HEAD"]);
+    await writeLastUpdate(repo, head, { status: "partial" });
+
+    const status = await getUpdateNoopStatus(repo);
+
+    expect(status).toEqual({
+      shouldSkip: false,
+      reason: "previous run was partial",
     });
   });
 

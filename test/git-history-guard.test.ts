@@ -218,4 +218,43 @@ describe("writeLastUpdateMetadata", () => {
     expect(loaded?.model).toBe("model-a");
     expect(loaded?.command).toBe("update");
   });
+
+  test("round-trips the abandoned list through readLastUpdate", async () => {
+    const repo = await createRepo();
+
+    await writeLastUpdateMetadata(
+      "update",
+      repo,
+      "model-a",
+      "repository",
+      "partial",
+      undefined,
+      ["architecture/", "operations/"],
+    );
+
+    const loaded = await readLastUpdate(repo, "repository");
+    expect(loaded?.abandoned).toEqual(["architecture/", "operations/"]);
+  });
+
+  test("drops a malformed abandoned list on readback", async () => {
+    const repo = await createRepo();
+    // Seed a valid stamp so the openwiki dir exists, then overwrite it with a
+    // hand-edit whose abandoned list has a non-string element.
+    await writeLastUpdateMetadata("update", repo, "model-a", "repository");
+    await writeFile(
+      path.join(repo, "openwiki", ".last-update.json"),
+      `${JSON.stringify({
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        command: "update",
+        model: "model-a",
+        status: "partial",
+        abandoned: ["ok/", 42],
+      })}\n`,
+      "utf8",
+    );
+
+    const loaded = await readLastUpdate(repo, "repository");
+    expect(loaded?.status).toBe("partial");
+    expect(loaded?.abandoned).toBeUndefined();
+  });
 });

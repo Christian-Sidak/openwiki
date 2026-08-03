@@ -126,8 +126,11 @@ export async function getUpdateNoopStatus(
     return { shouldSkip: false, reason: "missing previous update git head" };
   }
 
-  if (lastUpdate.status === "interrupted") {
-    return { shouldSkip: false, reason: "previous update was interrupted" };
+  if (lastUpdate.status === "interrupted" || lastUpdate.status === "partial") {
+    return {
+      shouldSkip: false,
+      reason: `previous run was ${lastUpdate.status}`,
+    };
   }
 
   const head = await getGitHead(cwd);
@@ -192,6 +195,7 @@ export async function writeLastUpdateMetadata(
   outputMode: OpenWikiOutputMode = "repository",
   status: UpdateRunStatus = "complete",
   language?: string,
+  abandoned?: string[],
 ): Promise<void> {
   const metadataFile = getMetadataFilePath(cwd, outputMode);
   // An interrupted run must not advance the verified head. It reads back the
@@ -212,6 +216,7 @@ export async function writeLastUpdateMetadata(
     model: modelId,
     status,
     ...(language ? { language } : {}),
+    ...(abandoned && abandoned.length ? { abandoned } : {}),
   };
 
   await mkdir(path.dirname(metadataFile), { recursive: true });
@@ -340,13 +345,25 @@ export async function readLastUpdate(
             ? parsedMetadata.gitHead
             : undefined,
         model: parsedMetadata.model,
-        // Metadata written before the status field existed is treated as
-        // complete so upgrades do not force a spurious re-run.
+        // Absent or unrecognized status means metadata predates the field, so
+        // it is treated as complete to avoid a spurious re-run on upgrade. Both
+        // non-complete outcomes pass through unchanged so the next run resumes
+        // instead of trusting a partial wiki.
         status:
-          parsedMetadata.status === "interrupted" ? "interrupted" : "complete",
+          parsedMetadata.status === "interrupted" ||
+          parsedMetadata.status === "partial"
+            ? parsedMetadata.status
+            : "complete",
         language:
           typeof parsedMetadata.language === "string"
             ? parsedMetadata.language
+            : undefined,
+        // Carried through only when every element is a string, so a malformed
+        // list from a hand edit is dropped rather than trusted.
+        abandoned:
+          Array.isArray(parsedMetadata.abandoned) &&
+          parsedMetadata.abandoned.every((entry) => typeof entry === "string")
+            ? parsedMetadata.abandoned
             : undefined,
       };
     }
