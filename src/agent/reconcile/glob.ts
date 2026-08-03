@@ -9,12 +9,13 @@
  */
 export function compileGlob(pattern: string): RegExp {
   // Sentinels standing in for glob metacharacters while literal regex
-  // characters are escaped, then expanded to regex fragments below. Each is a
-  // control/replacement code point that cannot appear in a repo-relative path,
-  // so it can never collide with literal input.
-  const DOUBLE = "�";
-  const SINGLE = "";
-  const QMARK = "";
+  // characters are escaped, then expanded to regex fragments below. Written as
+  // unicode escapes for legibility; each is a control/replacement code point
+  // that cannot appear in a repo-relative path, so it can never collide with
+  // literal input.
+  const DOUBLE = "\uFFFD";
+  const SINGLE = "\u0001";
+  const QMARK = "\u0002";
 
   const tokenized = pattern
     .replaceAll("**", DOUBLE)
