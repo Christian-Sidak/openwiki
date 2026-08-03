@@ -57,9 +57,9 @@ function makeEvidence(opts: {
   const evidence: RepoEvidence = {
     runHead: opts.runHead ?? "RUNHEAD",
     dirtyPaths: [],
-    changedSince: async (head) => {
+    changedSince: (head) => {
       queried.push(head);
-      return changedByHead[head] ?? [];
+      return Promise.resolve(changedByHead[head] ?? []);
     },
   };
   return { evidence, queried };
@@ -229,17 +229,17 @@ describe("gatherRepoEvidence parsing (mocked git)", () => {
    * porcelain fixture, diff -> the name-status fixture.
    */
   function stubGit(opts: { porcelain?: string; diff?: string }): void {
-    mockGit.mockImplementation(async (_cwd: string, args: string[]) => {
+    mockGit.mockImplementation((_cwd: string, args: string[]) => {
       if (args[0] === "rev-parse") {
-        return "RUNHEAD";
+        return Promise.resolve("RUNHEAD");
       }
       if (args[0] === "status") {
-        return opts.porcelain ?? "";
+        return Promise.resolve(opts.porcelain ?? "");
       }
       if (args[0] === "diff") {
-        return opts.diff ?? "";
+        return Promise.resolve(opts.diff ?? "");
       }
-      return "";
+      return Promise.resolve("");
     });
   }
 
@@ -296,14 +296,14 @@ describe("gatherRepoEvidence parsing (mocked git)", () => {
 describe("gatherRepoEvidence diff caching (mocked git)", () => {
   beforeEach(() => {
     mockGit.mockReset();
-    mockGit.mockImplementation(async (_cwd: string, args: string[]) => {
+    mockGit.mockImplementation((_cwd: string, args: string[]) => {
       if (args[0] === "rev-parse") {
-        return "RUNHEAD";
+        return Promise.resolve("RUNHEAD");
       }
       if (args[0] === "diff") {
-        return "M\tsrc/a.ts";
+        return Promise.resolve("M\tsrc/a.ts");
       }
-      return "";
+      return Promise.resolve("");
     });
   });
 
@@ -316,11 +316,11 @@ describe("gatherRepoEvidence diff caching (mocked git)", () => {
     await evidence.changedSince("H2");
 
     const diffCalls = mockGit.mock.calls.filter(
-      (call) => (call[1] as string[])[0] === "diff",
+      (call) => call[1][0] === "diff",
     );
     expect(diffCalls).toHaveLength(2);
     // And each distinct head was diffed against the pinned run head.
-    expect((diffCalls[0][1] as string[]).slice(-2)).toEqual(["H1", "RUNHEAD"]);
-    expect((diffCalls[1][1] as string[]).slice(-2)).toEqual(["H2", "RUNHEAD"]);
+    expect(diffCalls[0][1].slice(-2)).toEqual(["H1", "RUNHEAD"]);
+    expect(diffCalls[1][1].slice(-2)).toEqual(["H2", "RUNHEAD"]);
   });
 });
