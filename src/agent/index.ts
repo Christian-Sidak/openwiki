@@ -9,6 +9,7 @@ import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
 import { ChatOpenAI } from "@langchain/openai";
 import { ChatOpenRouter } from "@langchain/openrouter";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { Event as ProtocolEvent } from "@langchain/protocol";
 import {
   CompositeBackend,
@@ -305,6 +306,14 @@ export type OpenWikiAgentOptions = {
   model: BaseChatModel;
   onEvent?: (event: OpenWikiRunEvent) => void;
   outputMode: OpenWikiOutputMode;
+
+  /**
+   * Extra tools appended to the agent's tool set (e.g. a unit's suggestion
+   * tool).
+   *
+   * @default undefined — only the standard tool set
+   */
+  extraTools?: StructuredToolInterface[];
 };
 
 /** Creates an OpenWiki DeepAgent graph from an already-initialized chat model. */
@@ -376,7 +385,7 @@ function createOpenWikiAgentGraph(
 
   return createDeepAgent({
     model: options.model,
-    tools: createOpenWikiConnectorTools(),
+    tools: [...createOpenWikiConnectorTools(), ...(options.extraTools ?? [])],
     checkpointer: options.checkpointer,
     backend,
     middleware:
@@ -477,6 +486,35 @@ async function runOpenWikiAgentCore(
   );
   emitDebug(options, `model.provider=${provider}`);
   emitDebug(options, "model=initialized");
+
+  // Repository-mode init/update run the reconcile loop. Chat, local-wiki, and
+  // translation runs stay on the legacy single-invocation path. The translation
+  // plan is resolved here (the graph builder resolves its own copy for the
+  // legacy path) so a language switch keeps its whole-wiki reconciliation. The
+  // dynamic import breaks the module cycle (orchestrator -> this file).
+  const translation = resolveTranslationPlan(
+    command,
+    resolveLanguage(options.language).language,
+    context.lastUpdate?.language,
+  );
+  if (outputMode === "repository" && command !== "chat" && !translation) {
+    const { runReconcileCommand } = await import("./orchestrator.js");
+
+    return runReconcileCommand({
+      command,
+      cwd,
+      modelId,
+      openWikiIgnore,
+      wikiGoal: context.wikiGoal,
+      unitDeps: {
+        cwd,
+        model,
+        options,
+        language: context.language,
+      },
+    });
+  }
+
   const threadId = options.threadId ?? createThreadId(cwd, createRunThreadId());
   emitDebug(options, `thread=${threadId}`);
   const checkpointTarget = resolveCheckpointTarget(command);
@@ -682,7 +720,7 @@ const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
  * exactly the long init runs least able to absorb it, and creates the in-flight
  * promises behind the #494 crash.
  */
-const AGENT_MAX_CONCURRENCY = 4;
+export const AGENT_MAX_CONCURRENCY = 4;
 
 export type CheckpointTarget = {
   connString: string;
@@ -750,6 +788,14 @@ export const CONVERSATION_HISTORY_MOUNT = "/conversation_history/";
  *   permissions do not affect, so denying tool writes closes the door on
  *   prompt-injected content being persisted into future sessions' context
  *   without touching the offload itself.
+ *
+ * The reconcile bookkeeping files (`.manifest.json`, `.last-update.json`)
+ * cannot be protected here: they live inside the execution-capable wiki
+ * backend, and deepagents forbids path-based permission rules on a backend
+ * that supports shell execution (the two denies above only work because they
+ * are separate non-exec CompositeBackend mounts). The orchestrator owns those
+ * files through Node fs and the unit prompt never asks the model to touch
+ * them; hardening that boundary is tracked for a later pass.
  */
 export const AGENT_FILESYSTEM_PERMISSIONS: FilesystemPermission[] = [
   { operations: ["write"], paths: ["/skills/**"], mode: "deny" },

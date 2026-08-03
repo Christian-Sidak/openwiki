@@ -1,11 +1,33 @@
 export type OpenWikiCommand = "chat" | "init" | "update";
 export type OpenWikiOutputMode = "local-wiki" | "repository";
 
-export type OpenWikiRunResult = {
+export interface OpenWikiRunResult {
   command: OpenWikiCommand;
+
   model: string;
+
+  /**
+   * True when the run no-opped instead of executing.
+   *
+   * @default undefined — the run executed
+   */
   skipped?: boolean;
-};
+
+  /**
+   * Reconcile-loop summary.
+   *
+   * @default undefined — legacy-path runs (chat, local-wiki, translation)
+   * report no section summary
+   */
+  sections?: { total: number; done: number; failed: number; abandoned: number };
+
+  /**
+   * Wiki state after the run, mirrors the stamp.
+   *
+   * @default undefined — legacy-path runs do not derive a wiki status
+   */
+  runStatus?: UpdateRunStatus;
+}
 
 export type OpenWikiRunEvent =
   | {

@@ -207,10 +207,13 @@ export async function writeLastUpdateMetadata(
   const metadata: UpdateMetadata = {
     updatedAt: new Date().toISOString(),
     command,
-    // Falls back to the current head when there is no prior stamp (a first init
-    // that died before ever recording one).
+    // A partial run (reconcile loop finished some sections, not all) records no
+    // head: the manifest is the resume source of truth, and any head here would
+    // let the next update's no-op check skip the resume and starve the unwritten
+    // sections. Repository complete runs fall back to the current head when there
+    // is no prior stamp (a first init that died before ever recording one).
     gitHead:
-      outputMode === "repository"
+      outputMode === "repository" && status !== "partial"
         ? (previous?.gitHead ?? (await getGitHead(cwd)))
         : undefined,
     model: modelId,

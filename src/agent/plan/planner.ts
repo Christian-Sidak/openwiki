@@ -173,6 +173,35 @@ export async function invokeWithRetry<T>(
 }
 
 /**
+ * Proposes sources for one adopted section whose pages didn't yield valid
+ * globs. Scoped version of planSections; same validate-and-retry treatment.
+ */
+export async function proposeSourcesForSection(
+  model: BaseChatModel,
+  skeleton: RepoSkeleton,
+  sectionPath: string,
+  brief: string | undefined,
+): Promise<string[]> {
+  const prompt = [
+    `Propose source globs for the wiki section "${sectionPath}".`,
+    brief ? `Section brief: ${brief}` : "",
+    "Globs must match real paths from this tree:",
+    skeleton.treeSummary,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const plan = await invokeWithRetry<Plan>(
+    model,
+    PlanSchema,
+    prompt,
+    (candidate) => validatePlanAgainstRepo(candidate.sections, skeleton),
+  );
+
+  return plan.sections.flatMap((section) => section.sources);
+}
+
+/**
  * Converts validated plans into fresh manifest entries.
  */
 export function toManifestSections(plans: SectionPlan[]): ManifestSection[] {

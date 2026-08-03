@@ -1,3 +1,4 @@
+import { OPEN_WIKI_DIR } from "../constants.js";
 import {
   OpenWikiCommand,
   OpenWikiOutputMode,
@@ -338,6 +339,8 @@ export function createUserPrompt(
     return userMessage?.trim() || "Start an OpenWiki chat.";
   }
 
+  // Repository mode routes through orchestrator.ts; this branch serves
+  // local-wiki mode.
   if (command === "init") {
     return appendUserMessage(
       `
@@ -559,5 +562,111 @@ ${prompt}
 
 Additional user instruction:
 ${userMessage.trim()}
+`.trim();
+}
+
+/**
+ * One entry in the wiki's table of contents, as unit prompts see it.
+ */
+export interface SectionTocEntry {
+  /**
+   * Wiki-relative section directory, e.g. "billing/".
+   */
+  path: string;
+
+  /**
+   * Planner brief for the section.
+   *
+   * @default undefined — the section has no brief
+   */
+  brief?: string;
+}
+
+/**
+ * Task shape for a section-writing unit.
+ */
+export interface SectionUnitTask {
+  /**
+   * Wiki-relative section directory, e.g. "billing/".
+   */
+  sectionPath: string;
+
+  /**
+   * Planner brief for the section.
+   *
+   * @default undefined — no planner brief exists for the section
+   */
+  brief?: string;
+
+  /**
+   * Source globs the section owns.
+   */
+  sources: string[];
+
+  /**
+   * "generate" for missing sections, "refresh" for stale ones.
+   */
+  mode: "generate" | "refresh";
+
+  /**
+   * For refresh: exactly the changed files that made the section stale.
+   *
+   * @default undefined — generate mode; there is no staleness diff
+   */
+  changedFiles?: string[];
+
+  /**
+   * Retry guidance injected after a truncation failure.
+   *
+   * @default false
+   */
+  truncationRetry?: boolean;
+
+  /**
+   * The wiki's table of contents: every section's path and brief. This is the
+   * manifest's public face; heads/attempts stay private. Grounds cross-links
+   * and the suggest_related_section judgment.
+   */
+  toc: SectionTocEntry[];
+}
+
+/**
+ * Focused user message for one section unit.
+ */
+export function createSectionUnitMessage(task: SectionUnitTask): string {
+  return `
+${task.mode === "generate" ? "Create" : "Refresh"} the documentation section ${OPEN_WIKI_DIR}/${task.sectionPath} and nothing else.
+
+- This section documents these sources: ${task.sources.join(", ")}
+${task.brief ? `- Section brief: ${task.brief}` : ""}
+${
+  task.mode === "refresh" && task.changedFiles?.length
+    ? `- It is stale because these files changed; focus the refresh on their impact:\n${task.changedFiles.map((file) => `  - ${file}`).join("\n")}`
+    : ""
+}
+- Read whatever sources you need for accuracy, but write ONLY inside ${OPEN_WIKI_DIR}/${task.sectionPath}.
+- Do not create or edit quickstart.md, other sections, or any file outside your section directory.
+- Other sections in this wiki (cross-link them where relevant; never write into them):
+${task.toc
+  .filter((entry) => entry.path !== task.sectionPath)
+  .map((entry) => `  - ${entry.path}${entry.brief ? ` : ${entry.brief}` : ""}`)
+  .join("\n")}
+- If content you are documenting also clearly belongs to one of those sections' domains, call suggest_related_section once for that relationship (section path + the source glob it should watch + one-line reason). At most two calls; when unsure, don't. Keep writing only in your own section either way.
+${task.truncationRetry ? "- A previous attempt was cut off mid-write. Write shorter pages this time: split content into more, smaller files, and keep each write_file call well under the size that failed." : ""}
+`.trim();
+}
+
+/**
+ * User message for the entry-page unit: quickstart from the manifest, links
+ * only what exists.
+ */
+export function createEntryPageMessage(sections: SectionTocEntry[]): string {
+  return `
+Write ${OPEN_WIKI_DIR}/quickstart.md and nothing else.
+
+- It is the wiki entry page: orient a reader, then link each section below.
+- Link ONLY these sections; every one exists on disk. Never invent a link.
+${sections.map((section) => `  - ${section.path}${section.brief ? ` : ${section.brief}` : ""}`).join("\n")}
+- If an existing quickstart.md is present, preserve its Backlog section if one exists.
 `.trim();
 }
