@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { scheduler } from "node:timers/promises";
 import React, { useEffect, useRef, useState } from "react";
 import { Box, render, Text, useApp, useInput } from "ink";
 import { marked, type Token, type Tokens } from "marked";
@@ -293,6 +294,7 @@ function App({ command }: AppProps) {
     startupModelId,
   );
   const activeRunId = useRef(0);
+  const agentRunInFlight = useRef(false);
   const sessionThreadId = useRef(createOpenWikiThreadId(runtimeCwd));
   const sessionThreadMode = useRef<OpenWikiRunMode>(runMode);
   const mountedRef = useRef(false);
@@ -555,9 +557,18 @@ function App({ command }: AppProps) {
       return;
     }
 
+    if (isInitCommand && initWizardConsumed && runState.status === "idle") {
+      return;
+    }
+
     if (runState.status !== "idle" && runState.status !== "init-setup-saved") {
       return;
     }
+
+    if (agentRunInFlight.current) {
+      return;
+    }
+    agentRunInFlight.current = true;
 
     const runId = activeRunId.current + 1;
     const runMessage = activeUserMessage;
@@ -640,6 +651,8 @@ function App({ command }: AppProps) {
           });
         }
 
+        await scheduler.yield();
+
         // Code-mode connectors pull their evidence and augment the agent message
         // before the run, matching the --print path exactly. They emit progress
         // into the same run log so the pull is visible rather than a silent gap.
@@ -720,12 +733,17 @@ function App({ command }: AppProps) {
               authFix,
             });
           });
+      })
+      .finally(() => {
+        agentRunInFlight.current = false;
       });
   }, [
     app,
     command,
     activeMessageIsFollowup,
     activeUserMessage,
+    initWizardConsumed,
+    isInitCommand,
     resolvedCommand,
     runMode,
     runState.status,
@@ -792,6 +810,10 @@ function App({ command }: AppProps) {
         modelIdOverride={command.modelId}
         walkAllSteps={isInitCommand}
         onComplete={(result) => {
+          if (agentRunInFlight.current) {
+            return;
+          }
+
           setInitWizardConsumed(true);
           const nextCodeRuntimeCwd = result.repoRoot ?? codeRuntimeCwd;
 
@@ -3183,14 +3205,14 @@ function createToolDisplay(
       return pickToolDisplay(
         variantIndex,
         [
-          `Spinning up ${formatCount(count, "subagent", "subagents")}`,
-          `Starting ${formatCount(count, "subagent", "subagents")}`,
-          `Delegating to ${formatCount(count, "subagent", "subagents")}`,
+          `Starting ${formatCount(count, "task", "tasks")}`,
+          `Opening ${formatCount(count, "task", "tasks")}`,
+          `Working on ${formatCount(count, "task", "tasks")}`,
         ],
         [
-          `Finished ${formatCount(count, "subagent", "subagents")}`,
-          `Completed ${formatCount(count, "subagent", "subagents")}`,
-          `Wrapped up ${formatCount(count, "subagent", "subagents")}`,
+          `Finished ${formatCount(count, "task", "tasks")}`,
+          `Completed ${formatCount(count, "task", "tasks")}`,
+          `Wrapped up ${formatCount(count, "task", "tasks")}`,
         ],
       );
     }
