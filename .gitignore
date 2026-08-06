@@ -23,6 +23,8 @@ large_tool_results/
 .cache/
 artifacts/
 results/
+evals/freshness-mutation/results.json
+evals/freshness-mutation/agent-results.json
 summaries/
 __pycache__/
 *.pyc

@@ -9,6 +9,7 @@ import type {
   OpenWikiOutputMode,
   RunContext,
   UpdateMetadata,
+  UpdateRunSignals,
 } from "./types.js";
 
 export {
@@ -45,9 +46,26 @@ export function createSystemPrompt(
     )
     .trim();
 
-  return command === "chat"
-    ? prompt
-    : `${prompt}\n\n${createLinkIntegrityInstructions()}`.trim();
+  if (command === "chat") {
+    return prompt;
+  }
+
+  const withLinkIntegrity = `${prompt}\n\n${createLinkIntegrityInstructions()}`;
+
+  // Source-grounded freshness is a repository-wiki feature: the sidecars and the
+  // freshness preflight only apply when the wiki lives in the repository.
+  return outputMode === "repository"
+    ? `${withLinkIntegrity}\n\n${createSourceGroundingInstructions()}`.trim()
+    : withLinkIntegrity.trim();
+}
+
+export function createSourceGroundingInstructions(): string {
+  return `
+Source grounding:
+- After you write or update a page that documents specific code, call record_source_dependencies with the page path and the source definitions it is grounded in. Prefer a qualified symbol (for example AuthService.authenticate or Store.Create) over whole-file tracking, and list every definition the page's claims actually depend on.
+- This lets a later update detect when the page has drifted from the code even when git looks unchanged. Recording nothing means the page cannot be checked for freshness, so ground every page that makes claims about specific functions, classes, methods, or types.
+- If the tool reports a warning that a symbol did not resolve, fix the reference (correct the path or the qualified name) and call it again rather than leaving the page ungrounded.
+`;
 }
 
 export function createUserPrompt(
@@ -56,6 +74,7 @@ export function createUserPrompt(
   userMessage: string | null = null,
   outputMode: OpenWikiOutputMode = "local-wiki",
   runtimeRoot?: string,
+  updateSignals?: UpdateRunSignals,
 ): string {
   const template =
     outputMode === "repository"
@@ -72,11 +91,61 @@ export function createUserPrompt(
         ? `Additional user instruction:\n${userMessage.trim()}`
         : "",
     )
+    .replace("{SOURCE_FRESHNESS}", formatSourceFreshness(updateSignals))
     .replace(
       "{RUNTIME_CONTEXT}",
       runtimeRoot ? formatRuntimeContext(runtimeRoot, outputMode) : "",
     )
     .trim();
+}
+
+/**
+ * Renders the pre-computed update signals into the update prompt: the repository
+ * source that moved, and the pages source-grounded freshness flagged as no
+ * longer matching that source. The stale-page list is the point of recording
+ * dependencies: the agent is told which pages to revalidate rather than having
+ * to infer them from the git diff.
+ *
+ * The paths and states are OpenWiki-produced data printed verbatim as a Markdown
+ * list, never interpreted as instructions or commands. Returns an empty string
+ * when there is nothing pre-computed (a non-update run, or an update forced only
+ * by a user message), leaving the placeholder blank.
+ *
+ * @param updateSignals - The combined git and freshness signal, when available.
+ */
+function formatSourceFreshness(updateSignals?: UpdateRunSignals): string {
+  if (!updateSignals) {
+    return "";
+  }
+
+  const { changedPaths, stalePages } = updateSignals;
+  if (changedPaths.length === 0 && stalePages.length === 0) {
+    return "";
+  }
+
+  const sections: string[] = [];
+
+  if (changedPaths.length > 0) {
+    sections.push(
+      [
+        "Repository changes (source files that moved since the wiki was last updated):",
+        ...changedPaths.map((changedPath) => `- ${changedPath}`),
+      ].join("\n"),
+    );
+  }
+
+  if (stalePages.length > 0) {
+    sections.push(
+      [
+        "Pages that MUST be revalidated (their recorded source dependencies no longer match the code):",
+        ...stalePages.map((page) => `- ${page.page} (${page.state})`),
+        "",
+        "These pages were selected by source-grounded freshness, not by you. Open each one, compare it against the current source it cites, and correct it — or, if it is genuinely still accurate, leave the prose and only re-record its dependencies. Do not skip a listed page because the git diff does not obviously touch it: that gap is exactly the drift the recorded dependencies caught. After revalidating a page, call record_source_dependencies to re-record its current dependencies so the next run starts from a fresh baseline. Then apply your normal docs-impact plan to the repository changes above for any further pages.",
+      ].join("\n"),
+    );
+  }
+
+  return `\n${sections.join("\n\n")}\n`;
 }
 
 export function formatRuntimeRootInstruction(

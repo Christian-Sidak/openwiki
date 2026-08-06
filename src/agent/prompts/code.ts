@@ -416,7 +416,7 @@ Wiki brief:
   update: `Update the existing OpenWiki documentation for this repository.
 
 Inspect the target repository's openwiki/ directory, read /openwiki/.last-update.json to find the last documented \`gitHead\`, compare it with the current HEAD, and inspect that Git history and diff yourself. Update every documentation page needed to keep the wiki accurate, complete, and correctly linked. Preserve unrelated accurate content and avoid formatting-only changes. If the wiki is already current, do not edit files. The CLI will update /openwiki/.last-update.json only when OpenWiki content changes.
-
+{SOURCE_FRESHNESS}
 Wiki brief:
 {WIKI_GOAL}
 

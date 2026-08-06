@@ -19,6 +19,7 @@ import {
   type GlobResult,
 } from "deepagents";
 import { createOpenWikiConnectorTools } from "../connectors/tools.js";
+import { createSourceGroundingTools } from "../staleness/tool.js";
 import {
   DEBUG_ENV_KEYS,
   loadOpenWikiEnv,
@@ -74,6 +75,7 @@ import type {
   OpenWikiRunOptions,
   OpenWikiRunResult,
   RunContext,
+  UpdateRunSignals,
 } from "./types.js";
 import {
   ANTHROPIC_BASE_URL_ENV_KEY,
@@ -171,10 +173,14 @@ export async function runOpenWikiAgent(
     `openwikiignore.patterns=${openWikiIgnore.patterns.length}`,
   );
 
-  if (command === "update" && shouldCheckUpdateNoop(options)) {
+  // Freshness plus git change detection runs on every update, before the agent,
+  // so the stale-page list reaches the prompt. The skip short-circuit is only
+  // taken when no user message forces a run.
+  let updateSignals: UpdateRunSignals | undefined;
+  if (command === "update") {
     const noopStatus = await getUpdateNoopStatus(cwd, openWikiIgnore);
 
-    if (noopStatus.shouldSkip) {
+    if (noopStatus.shouldSkip && shouldCheckUpdateNoop(options)) {
       const message =
         "No repository changes detected since the last OpenWiki update; skipping agent run.";
       emitDebug(options, `update.noop gitHead=${noopStatus.gitHead}`);
@@ -192,9 +198,17 @@ export async function runOpenWikiAgent(
       };
     }
 
-    emitDebug(options, `update.noop=false reason=${noopStatus.reason}`);
-  } else if (command === "update") {
-    emitDebug(options, "update.noop=false reason=user message provided");
+    if (noopStatus.shouldSkip) {
+      // Git and freshness both quiet, but a user message forces the run. There
+      // is no drift to hand the agent, so it works purely from the message.
+      emitDebug(options, "update.noop=false reason=user message provided");
+    } else {
+      updateSignals = {
+        changedPaths: noopStatus.changedPaths,
+        stalePages: noopStatus.stalePages,
+      };
+      emitDebug(options, `update.noop=false reason=${noopStatus.reason}`);
+    }
   }
 
   const debugFetchCapture = installOpenRouterDebugFetch(options);
@@ -216,6 +230,7 @@ export async function runOpenWikiAgent(
       config.modelId,
       config.providerRetryAttempts,
       openWikiIgnore,
+      updateSignals,
     );
   } catch (error) {
     // Enrich the error for the CLI's debug/auth UI, then rethrow. The telemetry
@@ -366,7 +381,15 @@ function createOpenWikiAgentGraph(
 
   return createDeepAgent({
     model: options.model,
-    tools: createOpenWikiConnectorTools(),
+    tools: [
+      ...createOpenWikiConnectorTools(),
+      // Source-grounded freshness applies to the in-repository wiki; the agent
+      // records each page's source dependencies so later updates can detect
+      // drift the git cursor cannot see.
+      ...(options.command !== "chat" && options.outputMode === "repository"
+        ? createSourceGroundingTools(options.cwd)
+        : []),
+    ],
     checkpointer: options.checkpointer,
     backend,
     middleware:
@@ -432,6 +455,7 @@ async function runOpenWikiAgentCore(
   modelId: string,
   providerRetryAttempts: number,
   openWikiIgnore: OpenWikiIgnore,
+  updateSignals?: UpdateRunSignals,
 ): Promise<OpenWikiRunResult> {
   const outputMode = options.outputMode ?? "local-wiki";
   const context = await inStage(
@@ -492,7 +516,13 @@ async function runOpenWikiAgentCore(
     messages: [
       {
         role: "user",
-        content: createRunUserMessage(command, cwd, context, options),
+        content: createRunUserMessage(
+          command,
+          cwd,
+          context,
+          options,
+          updateSignals,
+        ),
       },
     ],
   };
@@ -662,6 +692,7 @@ function createRunUserMessage(
   cwd: string,
   context: Awaited<ReturnType<typeof createRunContext>>,
   options: OpenWikiRunOptions,
+  updateSignals?: UpdateRunSignals,
 ): string {
   if (options.isFollowup === true && options.userMessage?.trim()) {
     return options.userMessage.trim();
@@ -673,6 +704,7 @@ function createRunUserMessage(
     options.userMessage ?? null,
     options.outputMode ?? "local-wiki",
     cwd,
+    updateSignals,
   );
 }
 

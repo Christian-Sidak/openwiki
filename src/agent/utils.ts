@@ -13,6 +13,7 @@ import {
   readOpenWikiOnboardingConfig,
   readRepositoryWikiInstructions,
 } from "../onboarding.js";
+import { checkWikiFreshness, summarizeDrift } from "../staleness/preflight.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
 import type {
   OpenWikiCommand,
@@ -20,8 +21,10 @@ import type {
   OpenWikiRunOptions,
   RunContext,
   UpdateMetadata,
+  UpdateRunSignals,
   UpdateRunStatus,
 } from "./types.js";
+import type { PageFreshness } from "../staleness/freshness.js";
 import type { Dirent } from "node:fs";
 
 const execFileAsync = promisify(execFile);
@@ -36,10 +39,10 @@ export type UpdateNoopStatus =
       gitHead: string;
       model: string;
     }
-  | {
+  | ({
       shouldSkip: false;
       reason: string;
-    };
+    } & UpdateRunSignals);
 
 /**
  * Builds the persisted per-run context used by the prompt.
@@ -80,7 +83,16 @@ async function readRunWikiGoal(
 }
 
 /**
- * Decides whether an `update` run can be skipped because nothing meaningful changed.
+ * Decides whether an `update` run can be skipped because nothing meaningful
+ * changed, and, when it must run, what work reaches the agent.
+ *
+ * Source-grounded freshness is a first-class signal here, not a fallback: every
+ * page's sidecar is evaluated on every update, before the agent runs, no matter
+ * what git reports. The run branch carries both a `changedPaths` list (the
+ * repository source that moved) and a `stalePages` list (pages whose recorded
+ * dependencies no longer match the code), so the agent is told which pages must
+ * be revalidated rather than having to rediscover them from the git diff. A run
+ * is forced when git finds meaningful changes OR freshness finds any drift.
  *
  * Working-tree and committed changes that only touch `openwiki/` or paths
  * excluded by `openWikiIgnore` do not count as meaningful, so an ignored path
@@ -90,20 +102,29 @@ export async function getUpdateNoopStatus(
   cwd: string,
   openWikiIgnore = new OpenWikiIgnore([]),
 ): Promise<UpdateNoopStatus> {
+  // Freshness runs unconditionally and first: the stale-page list must be
+  // available to the agent even when git already found changes. Pages without a
+  // sidecar do not participate, so with no sidecars `stalePages` is empty and
+  // this is purely additive.
+  const freshness = await checkWikiFreshness(cwd);
+  const stalePages = freshness.drifted;
+
   const lastUpdate = await readLastUpdate(cwd, "repository");
 
+  // Cases where git cannot establish a baseline force a run. The freshness
+  // signal still rides along so a listed stale page is not silently dropped.
   if (!lastUpdate?.gitHead) {
-    return { shouldSkip: false, reason: "missing previous update git head" };
+    return forceRun("missing previous update git head", [], stalePages);
   }
 
   if (lastUpdate.status === "interrupted") {
-    return { shouldSkip: false, reason: "previous update was interrupted" };
+    return forceRun("previous update was interrupted", [], stalePages);
   }
 
   const head = await getGitHead(cwd);
 
   if (!head) {
-    return { shouldSkip: false, reason: "missing current git head" };
+    return forceRun("missing current git head", [], stalePages);
   }
 
   const status = await runGit(cwd, [
@@ -118,25 +139,47 @@ export async function getUpdateNoopStatus(
     .filter((line) => !isUpdateMetadataStatusLine(line))
     .filter((line) => !lineReferencesIgnoredPath(line, openWikiIgnore));
 
-  if (meaningfulStatus.length > 0) {
-    return { shouldSkip: false, reason: "worktree has changes" };
-  }
+  const worktreeChanged = meaningfulStatus.length > 0;
 
+  let committedPaths: string[] = [];
+  let committedChanged = false;
   if (head !== lastUpdate.gitHead) {
-    const committedPaths = await getChangedPathsSinceLastUpdate(
+    committedPaths = await getChangedPathsSinceLastUpdate(
       cwd,
       lastUpdate.gitHead,
     );
 
-    if (
+    // An empty diff across a moved head (a merge or empty commit) is treated as
+    // a change, matching the historical "git head changed" behavior.
+    committedChanged =
       committedPaths.length === 0 ||
       committedPaths.some(
         (changedPath) =>
           !isOpenWikiPath(changedPath) && !openWikiIgnore.ignores(changedPath),
-      )
-    ) {
-      return { shouldSkip: false, reason: "git head changed" };
+      );
+  }
+
+  const changedPaths = collectMeaningfulSourcePaths(
+    meaningfulStatus,
+    committedPaths,
+    openWikiIgnore,
+  );
+
+  const gitChanged = worktreeChanged || committedChanged;
+
+  if (gitChanged || stalePages.length > 0) {
+    const reasons: string[] = [];
+    if (worktreeChanged) {
+      reasons.push("worktree has changes");
     }
+    if (committedChanged) {
+      reasons.push("git head changed");
+    }
+    if (stalePages.length > 0) {
+      reasons.push(summarizeDrift(stalePages));
+    }
+
+    return forceRun(reasons.join("; "), changedPaths, stalePages);
   }
 
   return {
@@ -144,6 +187,58 @@ export async function getUpdateNoopStatus(
     gitHead: head,
     model: lastUpdate.model,
   };
+}
+
+/**
+ * Builds the run branch of {@link UpdateNoopStatus}, carrying the update-run
+ * signals the agent prompt consumes.
+ */
+function forceRun(
+  reason: string,
+  changedPaths: string[],
+  stalePages: PageFreshness[],
+): UpdateNoopStatus {
+  return { shouldSkip: false, reason, changedPaths, stalePages };
+}
+
+/**
+ * Reduces raw worktree status lines and committed diff paths into the sorted,
+ * de-duplicated list of repository source paths the agent should treat as
+ * changed. Excludes `openwiki/` output, the run-metadata file, and
+ * `.openwikiignore`-matched paths, so the list is the source that moved, not
+ * the wiki's own edits.
+ */
+function collectMeaningfulSourcePaths(
+  meaningfulStatusLines: string[],
+  committedPaths: string[],
+  openWikiIgnore: OpenWikiIgnore,
+): string[] {
+  const paths = new Set<string>();
+
+  const consider = (candidate: string): void => {
+    const changedPath = normalizeGitPath(candidate);
+    // `isOpenWikiPath` already covers the run-metadata file, which lives under
+    // `openwiki/`, so the wiki's own bookkeeping never appears as a source
+    // change.
+    if (
+      changedPath &&
+      !isOpenWikiPath(changedPath) &&
+      !openWikiIgnore.ignores(changedPath)
+    ) {
+      paths.add(changedPath);
+    }
+  };
+
+  for (const line of meaningfulStatusLines) {
+    for (const changedPath of extractGitPaths(line)) {
+      consider(changedPath);
+    }
+  }
+  for (const changedPath of committedPaths) {
+    consider(changedPath);
+  }
+
+  return [...paths].sort();
 }
 
 export function shouldCheckUpdateNoop(options: OpenWikiRunOptions): boolean {
