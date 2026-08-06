@@ -14,6 +14,7 @@ import {
   readRepositoryWikiInstructions,
 } from "../onboarding.js";
 import { checkWikiFreshness, summarizeDrift } from "../staleness/preflight.js";
+import { isSourceFreshnessEnabled } from "../staleness/toggle.js";
 import { OpenWikiIgnore } from "./openwiki-ignore.js";
 import type {
   OpenWikiCommand,
@@ -102,12 +103,15 @@ export async function getUpdateNoopStatus(
   cwd: string,
   openWikiIgnore = new OpenWikiIgnore([]),
 ): Promise<UpdateNoopStatus> {
-  // Freshness runs unconditionally and first: the stale-page list must be
-  // available to the agent even when git already found changes. Pages without a
-  // sidecar do not participate, so with no sidecars `stalePages` is empty and
-  // this is purely additive.
-  const freshness = await checkWikiFreshness(cwd);
-  const stalePages = freshness.drifted;
+  // Freshness runs first and, by default, unconditionally: the stale-page list
+  // must be available to the agent even when git already found changes. Pages
+  // without a sidecar do not participate, so with no sidecars `stalePages` is
+  // empty and this is purely additive. The `OPENWIKI_DISABLE_SOURCE_FRESHNESS`
+  // override (the benchmark's control arm) skips the scan entirely, leaving the
+  // skip decision to git alone.
+  const stalePages = isSourceFreshnessEnabled()
+    ? (await checkWikiFreshness(cwd)).drifted
+    : [];
 
   const lastUpdate = await readLastUpdate(cwd, "repository");
 

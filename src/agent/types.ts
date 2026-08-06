@@ -33,6 +33,25 @@ export type OpenWikiRunEvent =
       message: string;
     };
 
+/**
+ * A single provider-reported token-usage sample parsed from one streamed model
+ * message. Emitted best-effort: only providers that surface `usage_metadata` on
+ * their streamed chunks produce these, and a run fires zero or more of them.
+ */
+export interface TokenUsage {
+  /** Prompt/input tokens the provider billed for this message. */
+  inputTokens: number;
+
+  /** Completion/output tokens the provider billed for this message. */
+  outputTokens: number;
+
+  /**
+   * Total tokens the provider reported, falling back to `inputTokens +
+   * outputTokens` when the provider omits an explicit total.
+   */
+  totalTokens: number;
+}
+
 export type OpenWikiRunOptions = {
   debug?: boolean;
   isFollowup?: boolean;
@@ -43,6 +62,16 @@ export type OpenWikiRunOptions = {
   threadId?: string;
   userMessage?: string | null;
   telemetryFile?: string;
+
+  /**
+   * Best-effort token-usage sink invoked as each streamed model message that
+   * carries provider `usage_metadata` is parsed. Consumers accumulate across
+   * calls for a run total. Unused by production; the source-freshness benchmark
+   * taps it to report cost.
+   *
+   * @default undefined - token usage is not collected.
+   */
+  onUsage?: (usage: TokenUsage) => void;
 };
 
 export type UpdateRunStatus = "complete" | "interrupted";

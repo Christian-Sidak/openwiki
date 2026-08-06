@@ -4,6 +4,7 @@ import {
   PERSONAL_SYSTEM_PROMPTS,
   PERSONAL_USER_PROMPTS,
 } from "./prompts/personal.js";
+import { isSourceFreshnessEnabled } from "../staleness/toggle.js";
 import type {
   OpenWikiCommand,
   OpenWikiOutputMode,
@@ -53,8 +54,10 @@ export function createSystemPrompt(
   const withLinkIntegrity = `${prompt}\n\n${createLinkIntegrityInstructions()}`;
 
   // Source-grounded freshness is a repository-wiki feature: the sidecars and the
-  // freshness preflight only apply when the wiki lives in the repository.
-  return outputMode === "repository"
+  // freshness preflight only apply when the wiki lives in the repository. The
+  // `OPENWIKI_DISABLE_SOURCE_FRESHNESS` override drops the grounding
+  // instructions for the benchmark's control arm.
+  return outputMode === "repository" && isSourceFreshnessEnabled()
     ? `${withLinkIntegrity}\n\n${createSourceGroundingInstructions()}`.trim()
     : withLinkIntegrity.trim();
 }

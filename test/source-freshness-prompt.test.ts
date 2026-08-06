@@ -64,10 +64,17 @@ describe("createUserPrompt source-freshness block", () => {
   });
 
   test("emits no freshness block when both signal lists are empty", () => {
-    const prompt = createUserPrompt("update", CONTEXT, null, "repository", "/repo", {
-      changedPaths: [],
-      stalePages: [],
-    });
+    const prompt = createUserPrompt(
+      "update",
+      CONTEXT,
+      null,
+      "repository",
+      "/repo",
+      {
+        changedPaths: [],
+        stalePages: [],
+      },
+    );
 
     expect(prompt).not.toContain("Repository changes");
     expect(prompt).not.toContain("Pages that MUST be revalidated");
@@ -75,10 +82,17 @@ describe("createUserPrompt source-freshness block", () => {
   });
 
   test("lists only the pages when there are stale pages but no git-visible source changes", () => {
-    const prompt = createUserPrompt("update", CONTEXT, null, "repository", "/repo", {
-      changedPaths: [],
-      stalePages: [stalePage("openwiki/connectors.md", "unverified")],
-    });
+    const prompt = createUserPrompt(
+      "update",
+      CONTEXT,
+      null,
+      "repository",
+      "/repo",
+      {
+        changedPaths: [],
+        stalePages: [stalePage("openwiki/connectors.md", "unverified")],
+      },
+    );
 
     expect(prompt).not.toContain("Repository changes");
     expect(prompt).toContain("Pages that MUST be revalidated");

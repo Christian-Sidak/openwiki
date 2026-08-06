@@ -20,6 +20,7 @@ import {
 } from "deepagents";
 import { createOpenWikiConnectorTools } from "../connectors/tools.js";
 import { createSourceGroundingTools } from "../staleness/tool.js";
+import { isSourceFreshnessEnabled } from "../staleness/toggle.js";
 import {
   DEBUG_ENV_KEYS,
   loadOpenWikiEnv,
@@ -75,6 +76,7 @@ import type {
   OpenWikiRunOptions,
   OpenWikiRunResult,
   RunContext,
+  TokenUsage,
   UpdateRunSignals,
 } from "./types.js";
 import {
@@ -178,6 +180,14 @@ export async function runOpenWikiAgent(
   // taken when no user message forces a run.
   let updateSignals: UpdateRunSignals | undefined;
   if (command === "update") {
+    // Record which arm this run is: freshness on (production default) or off
+    // (the benchmark control arm, via OPENWIKI_DISABLE_SOURCE_FRESHNESS). Debug
+    // only, so it never touches production telemetry, but it makes the arm
+    // greppable in the benchmark's captured event stream.
+    emitDebug(
+      options,
+      `freshness.mode=${isSourceFreshnessEnabled() ? "on" : "off"}`,
+    );
     const noopStatus = await getUpdateNoopStatus(cwd, openWikiIgnore);
 
     if (noopStatus.shouldSkip && shouldCheckUpdateNoop(options)) {
@@ -385,8 +395,12 @@ function createOpenWikiAgentGraph(
       ...createOpenWikiConnectorTools(),
       // Source-grounded freshness applies to the in-repository wiki; the agent
       // records each page's source dependencies so later updates can detect
-      // drift the git cursor cannot see.
-      ...(options.command !== "chat" && options.outputMode === "repository"
+      // drift the git cursor cannot see. The benchmark control arm
+      // (OPENWIKI_DISABLE_SOURCE_FRESHNESS) withholds the tool entirely so the
+      // agent cannot record or read dependencies.
+      ...(options.command !== "chat" &&
+      options.outputMode === "repository" &&
+      isSourceFreshnessEnabled()
         ? createSourceGroundingTools(options.cwd)
         : []),
     ],
@@ -560,6 +574,19 @@ async function runOpenWikiAgentCore(
 
   try {
     for await (const chunk of stream) {
+      // Best-effort token accounting for the source-freshness benchmark. Emitted
+      // only when a consumer opts in, so production streaming is untouched. Each
+      // streamed message chunk carries an additive slice of usage_metadata, so a
+      // consumer that sums these reconstructs the run total (§13, "where
+      // available").
+      if (options.onUsage) {
+        const usage = extractUsageFromChunk(chunk);
+
+        if (usage) {
+          options.onUsage(usage);
+        }
+      }
+
       const event = parseAgentStreamChunk(chunk);
 
       if (event) {
@@ -1326,6 +1353,100 @@ export function parseAgentStreamChunk(chunk: unknown): OpenWikiRunEvent | null {
         text,
       }
     : null;
+}
+
+/**
+ * Pulls a best-effort token-usage sample out of one streamed agent chunk, or
+ * `undefined` when the chunk is not a message chunk or carries no usage. Only
+ * the source-freshness benchmark consumes this, via `OpenWikiRunOptions.onUsage`.
+ *
+ * @param chunk - A raw value yielded by the agent stream.
+ */
+function extractUsageFromChunk(chunk: unknown): TokenUsage | undefined {
+  if (!isAgentStreamChunk(chunk)) {
+    return undefined;
+  }
+
+  const [, , payload] = chunk;
+
+  return findUsageMetadata(payload, new Set());
+}
+
+/**
+ * Walks a streamed message payload looking for the first LangChain
+ * `usage_metadata` record, mirroring the message-record nesting
+ * `extractMessageTextValue` traverses (chunk / message / data / kwargs). Returns
+ * the first sample found so a single chunk never contributes usage twice, and
+ * `undefined` when none is present.
+ *
+ * @param value - The payload node currently being inspected.
+ *
+ * @param seen - Records already visited, guarding against cyclic payloads.
+ */
+function findUsageMetadata(
+  value: unknown,
+  seen: Set<object>,
+): TokenUsage | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const usage = findUsageMetadata(item, seen);
+
+      if (usage) {
+        return usage;
+      }
+    }
+
+    return undefined;
+  }
+
+  if (!isRecord(value) || seen.has(value)) {
+    return undefined;
+  }
+
+  seen.add(value);
+
+  const direct = readUsageMetadata(value.usage_metadata);
+
+  if (direct) {
+    return direct;
+  }
+
+  for (const key of ["chunk", "message", "data", "kwargs"] as const) {
+    const usage = findUsageMetadata(value[key], seen);
+
+    if (usage) {
+      return usage;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Narrows an unknown value to a {@link TokenUsage} when it is a LangChain
+ * `usage_metadata` record with numeric input and output token counts, falling
+ * back to `input + output` when the provider omits an explicit total. Returns
+ * `undefined` for any other shape.
+ *
+ * @param value - A candidate `usage_metadata` value.
+ */
+function readUsageMetadata(value: unknown): TokenUsage | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const { input_tokens: inputTokens, output_tokens: outputTokens } = value;
+
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") {
+    return undefined;
+  }
+
+  const totalTokens =
+    typeof value.total_tokens === "number"
+      ? value.total_tokens
+      : inputTokens + outputTokens;
+
+  return { inputTokens, outputTokens, totalTokens };
 }
 
 /** Parses the Agent Protocol event shape exposed by the public agent factory. */
