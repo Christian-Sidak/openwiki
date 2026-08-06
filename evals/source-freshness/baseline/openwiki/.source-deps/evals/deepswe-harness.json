@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "page": "openwiki/evals/deepswe-harness.md",
+  "pageFingerprint": {
+    "algorithm": "page-bytes-v1",
+    "value": "sha256:dd0bc2e48d4f2de5d0efd93683c9e2b8d2b10d3e6047f7a8ad41206d7747d35f"
+  },
+  "sources": [
+    {
+      "path": "evals/deepswe/analyze_openwiki_usage.py",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:5e7c7dd866199a966bc05b1b2e1fcfd277b76b851eca3d8833b78bcddd1c8aaf"
+      }
+    },
+    {
+      "path": "evals/deepswe/deepswe_langsmith.py",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:96b692845527d44667670083b1b2de14efb15ca1a9378e6e89fe2811394aeb08"
+      }
+    },
+    {
+      "path": "evals/deepswe/openwiki_codex.py",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:452aa8f943463af31c7f68ee931db75b682e08af9171543399b5b1d6df164489"
+      }
+    },
+    {
+      "path": "evals/deepswe/run.py",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:8e8469cff53767cf10d4c59a856ffb458e6d8a18b088e4979009620d98834ae6"
+      }
+    }
+  ]
+}

@@ -188,7 +188,7 @@ function isWithinSourceDeps(candidate: string, root: string): boolean {
  *
  * @param cwd - Destination directory (a fresh temp dir).
  */
-async function extractSourceTree(
+export async function extractSourceTree(
   devRoot: string,
   commit: string,
   cwd: string,

@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "page": "openwiki/integrations/connectors.md",
+  "pageFingerprint": {
+    "algorithm": "page-bytes-v1",
+    "value": "sha256:56b9ef5f66a697e0c903d9917e35f032efb6a0426889e8ebb38c8f01792fe815"
+  },
+  "sources": [
+    {
+      "path": "src/connectors/http.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "fetchWithResilience",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:040253e816578ca9703fc1c6f6c42fe86196804f8771d1bc062185037c07c904"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:5db67daf433e538b696a7e761c260bf3f2afb8667a7b6f604bd241f833bcfbd5"
+      }
+    },
+    {
+      "path": "src/connectors/io.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:10283072c281cb6ab47adf4f21f8a6c275e07c6fd5121880fb77cd7d018da49b"
+      }
+    },
+    {
+      "path": "src/connectors/mcp-client.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:05e45e8ca32f455f2efbfc7696fca2712279e6f653c12e8b61cb9843accd6d91"
+      }
+    },
+    {
+      "path": "src/connectors/mcp-runtime.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:74480965af0f36cd56070a289c226797406385ee48d5da724b5c01a6ea4f2ff4"
+      }
+    },
+    {
+      "path": "src/connectors/registry.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "createConnectorRegistry",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:a9fd45d978f8b082752577421500f13833be40b1598373d15635b269efb5c518"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:9b3e9b6aee16612cb3d798051763422a5b4a569a032ce96b33aa3a4dc044f7b7"
+      }
+    },
+    {
+      "path": "src/connectors/sources/git-repo.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:92ecff5ad1d53fb540d281d10b77820309cda8fd2a11094898b33facbc2d50a8"
+      }
+    },
+    {
+      "path": "src/connectors/sources/gmail.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:c69898ef95c2344de56542680397ae1a4f8b8c963c51239a1fe7816d9b4d37ac"
+      }
+    },
+    {
+      "path": "src/connectors/sources/hackernews.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:42be45b968774afc305e5330dcd8c2986fe2fd385c5ba67e38f3fac79e4f3d70"
+      }
+    },
+    {
+      "path": "src/connectors/sources/mcp.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:f1bcfe7b43d64480607e80cb8438df379a97e071f48ea3228de3cee0df6bf7c3"
+      }
+    },
+    {
+      "path": "src/connectors/sources/slack.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:18884ef4c40a3db9d4f83d1fb4997a139c0e7df7c288515984d58e6aae4fddbc"
+      }
+    },
+    {
+      "path": "src/connectors/sources/web-search.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:45a8f533bb79a72b2b1d760aa9d2e5f88298d8a1883f80235a1987ce240b31a0"
+      }
+    },
+    {
+      "path": "src/connectors/sources/x.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:c16c12b518f7a4864c7187a24bf67efa2922b047f70af67beccdf4eb5b098cb9"
+      }
+    },
+    {
+      "path": "src/connectors/tools.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:06ed35448e5c95ceb90f9fc7891508f3cec2a6952509e992a95a79f4bb498c0f"
+      }
+    },
+    {
+      "path": "src/connectors/types.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:348211666c208590228ae960895cd9a3b103d33a14d65744919de25d3d411259"
+      }
+    },
+    {
+      "path": "src/ingestion.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "runOpenWikiIngestion",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:0d96d751d4ffeca5abf7d292b0eec76cca02f07e65b4a844ee382666549eb877"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:876bdb3991f88e077855213ad57ba53889e866e97a4605f09efcd65bdc3afa79"
+      }
+    },
+    {
+      "path": "src/onboarding.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:2f3894965455c92e8820e8d5290610e48f10821ff6bbc5c2ca24337098bcad43"
+      }
+    },
+    {
+      "path": "src/schedules.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:8905fc4239431f388327e81bb10835a69ec1630f32c6fb913b84b73e19fff906"
+      }
+    }
+  ]
+}

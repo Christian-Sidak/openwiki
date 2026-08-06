@@ -1,0 +1,143 @@
+{
+  "version": 1,
+  "page": "openwiki/cli/usage.md",
+  "pageFingerprint": {
+    "algorithm": "page-bytes-v1",
+    "value": "sha256:0e6cfc380c9781afed55b64642cecccf8f6e66089fb37ef39322c9a2a33881e9"
+  },
+  "sources": [
+    {
+      "path": "src/agent/vertex-surface.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveVertexSurface",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:db8ee4ae56b06322977df7a2ef7125af3c1ec2a032fe1cbaa365e95ee526bb5d"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:8fe320aeb0ff442d08cb8450783233ee722192636ae4b68ad86094fbd7f3db59"
+      }
+    },
+    {
+      "path": "src/cli.tsx",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:fdecb5712eebd13ecaecf08304ebf442b51b42267dd9c8e3e5e447ac3af204e6"
+      }
+    },
+    {
+      "path": "src/commands.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:02504fb563d9d0c6727afdb637a7f4a8489786cc722df8380ecab4c14b57916c"
+      }
+    },
+    {
+      "path": "src/constants.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:37d6b3194c69b1b0186ce036a9bbbd46b84f8df9094b4434e060056dc2fcc116"
+      }
+    },
+    {
+      "path": "src/constants.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveConfiguredProvider",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:37d6b3194c69b1b0186ce036a9bbbd46b84f8df9094b4434e060056dc2fcc116"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:1e27b67cee1134964dc5362a28a358c7f9d9914d21db2fabd3c3f54cc0f94d61"
+      }
+    },
+    {
+      "path": "src/constants.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveProviderBaseUrl",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:37d6b3194c69b1b0186ce036a9bbbd46b84f8df9094b4434e060056dc2fcc116"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:7b6115f1db340e79967c9fb2c9ae1e2432deb5478b3ddace6a2cf4f809beb103"
+      }
+    },
+    {
+      "path": "src/credentials.tsx",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:065d8d586888a40b3a3b386863431b15642b84f00efeb60d131257351b5611af"
+      }
+    },
+    {
+      "path": "src/external-cli-auth.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveExternalCliCredential",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:bf69637369424547ae23d025879bfa90e25856348ed4094aa2a6c7e7e4dac4bf"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:57d7ceb1bd4efad2c99b51a80f32f430fe8c6b35c2491e51e9b4d8fb57fad9aa"
+      }
+    },
+    {
+      "path": "src/language.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveLanguage",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:fc6e796fcddf8088d26db7fc78472b5d592fb5f3977b49813b6eeba1b2e8d234"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:2907427bc6400d7de7b6d47a47c84ce96a8e9e2e412445e0d45ea1a4ac74bbbb"
+      }
+    },
+    {
+      "path": "src/okf/index-labels.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:7cace562bd530079e194fb169924f40f88691d164e3b457569fba882eacff4b4"
+      }
+    },
+    {
+      "path": "src/visualize/graph.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:438e61951c74a4dd503a707f2c2261d6ed9a12addd6ab55edad508b515dacc52"
+      }
+    },
+    {
+      "path": "src/visualize/server.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:14920d98e88e3008cb914f5b31be55a3393f4c8ae27e567ad04a952db3b6d90e"
+      }
+    }
+  ]
+}

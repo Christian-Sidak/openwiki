@@ -498,14 +498,16 @@ export function renderSummaryMarkdown(result: BenchmarkResult): string {
 
   lines.push("## By scenario");
   lines.push("");
-  lines.push("| Scenario | Complexity | Recall without | Recall with |");
-  lines.push("| --- | --- | --- | --- |");
+  lines.push(
+    "| Scenario | Change | Complexity | Recall without | Recall with |",
+  );
+  lines.push("| --- | --- | --- | --- | --- |");
   for (const scenario of result.scenarios) {
     const recallWithout = without.perScenarioRecall[scenario.scenarioId] ?? 0;
     const recallWith =
       withFreshness.perScenarioRecall[scenario.scenarioId] ?? 0;
     lines.push(
-      `| ${scenario.scenarioId} | ${scenario.complexity} | ${pct(recallWithout)} | ${pct(recallWith)} |`,
+      `| ${scenario.scenarioId} | ${scenario.title} | ${scenario.complexity} | ${pct(recallWithout)} | ${pct(recallWith)} |`,
     );
   }
   lines.push("");

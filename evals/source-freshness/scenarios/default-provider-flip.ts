@@ -1,5 +1,6 @@
 /**
- * Scenario: the default provider flips from OpenAI to Anthropic (medium).
+ * Scenario: the default provider flips from OpenAI to Anthropic, a wide-impact
+ * default change.
  *
  * A single centralized edit in `src/constants.ts` with a broad, cascading
  * effect: `DEFAULT_PROVIDER` becomes `anthropic`, and because `DEFAULT_MODEL_ID`
@@ -133,7 +134,7 @@ function resolutionPage(
 /** The default-provider-flip scenario. */
 export const defaultProviderFlipScenario: EvalScenario = {
   id: "default-provider-flip",
-  title: "Default provider flips from OpenAI to Anthropic",
+  title: "Default provider flips from OpenAI to Anthropic (wide-impact default change)",
   complexity: "medium",
   description:
     "A centralized change in src/constants.ts: DEFAULT_PROVIDER becomes " +

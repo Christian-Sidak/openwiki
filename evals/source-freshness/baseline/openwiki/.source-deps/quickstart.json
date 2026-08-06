@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "page": "openwiki/quickstart.md",
+  "pageFingerprint": {
+    "algorithm": "page-bytes-v1",
+    "value": "sha256:f58711b0e220d117126ec0919bbe81a4f320cfc52c7c483b2c2bf33323e0cd9f"
+  },
+  "sources": [
+    {
+      "path": "package.json",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:dd2af5cbdca78f5ac29f3c8e660aa90acdcf807be63fefcc69d3585babfbbd50"
+      }
+    },
+    {
+      "path": "src/agent/index.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "createModel",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:3ffe1e39f7d8ccc73b51dd0522b3abecdbac6e61c2fe8d2969648752d89eca50"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:8f462fac7d3710b1d99cd4867aa6e3fa58368c545713d5e07e920e330b13dbb4"
+      }
+    },
+    {
+      "path": "src/agent/prompt.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "createSystemPrompt",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:952c616688b248720dda5e9091faed7d0588058bc862234658877f36dd7375ce"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:78a398ccfab0da5958f5c456e5143f877c20f25e27fe160b1e41c32df1f2982f"
+      }
+    },
+    {
+      "path": "src/agent/utils.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "createOpenWikiContentSnapshot",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:1f373ebf315f256f343e9b1a168c45b78a5ae25e6aa9e1c12860ba6592d82f60"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:d66ba11a7da91a1585b25c65a9632f0a2bb00d612083118733c84c0fae40ed89"
+      }
+    },
+    {
+      "path": "src/cli.tsx",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:fdecb5712eebd13ecaecf08304ebf442b51b42267dd9c8e3e5e447ac3af204e6"
+      }
+    },
+    {
+      "path": "src/commands.ts",
+      "resolution": "file",
+      "kind": "file",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:02504fb563d9d0c6727afdb637a7f4a8489786cc722df8380ecab4c14b57916c"
+      }
+    },
+    {
+      "path": "src/connectors/registry.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "createConnectorRegistry",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:a9fd45d978f8b082752577421500f13833be40b1598373d15635b269efb5c518"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:9b3e9b6aee16612cb3d798051763422a5b4a569a032ce96b33aa3a4dc044f7b7"
+      }
+    },
+    {
+      "path": "src/constants.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveConfiguredProvider",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:37d6b3194c69b1b0186ce036a9bbbd46b84f8df9094b4434e060056dc2fcc116"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:1e27b67cee1134964dc5362a28a358c7f9d9914d21db2fabd3c3f54cc0f94d61"
+      }
+    },
+    {
+      "path": "src/ingestion.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "runOpenWikiIngestion",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:0d96d751d4ffeca5abf7d292b0eec76cca02f07e65b4a844ee382666549eb877"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:876bdb3991f88e077855213ad57ba53889e866e97a4605f09efcd65bdc3afa79"
+      }
+    },
+    {
+      "path": "src/language.ts",
+      "resolution": "symbol",
+      "kind": "function",
+      "symbol": "resolveLanguage",
+      "fileFingerprint": {
+        "algorithm": "file-bytes-v1",
+        "value": "sha256:fc6e796fcddf8088d26db7fc78472b5d592fb5f3977b49813b6eeba1b2e8d234"
+      },
+      "definitionFingerprint": {
+        "algorithm": "tree-sitter-v1",
+        "value": "sha256:2907427bc6400d7de7b6d47a47c84ce96a8e9e2e412445e0d45ea1a4ac74bbbb"
+      }
+    }
+  ]
+}
