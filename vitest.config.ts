@@ -41,7 +41,16 @@ export default defineConfig({
         "src/visualize/client.ts",
         "src/setup/credentials/use-init-setup.ts",
       ],
-      reporter: ["text", "text-summary", "html", "json-summary", "lcov"],
+      // `json-summary` feeds the PR coverage-report action's totals table;
+      // `json` (coverage-final.json) feeds its per-changed-file section.
+      reporter: [
+        "text",
+        "text-summary",
+        "html",
+        "json-summary",
+        "json",
+        "lcov",
+      ],
     },
   },
 });

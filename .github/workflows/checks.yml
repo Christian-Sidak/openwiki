@@ -184,30 +184,33 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-  patch-coverage:
-    name: Patch coverage (informational)
-    # Reports how well a PR's own changed lines are covered, as a non-blocking
-    # signal only. `continue-on-error` plus the absence of `--fail-under` means
-    # this job can never turn a PR red. It runs on `pull_request` (not
-    # pull_request_target), so on fork PRs the token is read-only and the comment
-    # step no-ops harmlessly while the Step Summary still renders.
+  coverage:
+    name: Coverage (${{ matrix.artifact }})
+    # Generates a coverage report for both the base branch and the PR head so the
+    # report job below can show the delta. Informational only: `continue-on-error`
+    # keeps a coverage run from adding red noise (the `test` job is the real gate),
+    # and it still reports success to the dependent job so the comment posts.
     if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-latest
-    # `pull-requests: write` is scoped to this one job so it can post the sticky
-    # coverage comment; the workflow's top-level permission stays `contents:
-    # read`. `contents: read` is repeated here because a job-level block replaces
-    # the top-level default rather than extending it.
-    permissions:
-      contents: read
-      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Base is read from the base repo; the PR head from the head repo, so
+          # the comparison is correct for fork PRs as well as same-repo branches.
+          - artifact: base
+            repository: ${{ github.repository }}
+            ref: ${{ github.base_ref }}
+          - artifact: pull-request
+            repository: ${{ github.event.pull_request.head.repo.full_name }}
+            ref: ${{ github.head_ref }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # diff-cover compares the working tree against the base branch, so the
-          # shallow default checkout is not enough; fetch full history.
-          fetch-depth: 0
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
 
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -226,29 +229,42 @@ jobs:
       - name: Run coverage
         run: pnpm run coverage
 
-      - name: Install diff-cover
-        run: pipx install diff-cover
-
-      - name: Report patch coverage
-        # BASE_REF is passed via env, not interpolated into the shell, so a base
-        # branch name can never be parsed as a shell token.
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          diff-cover coverage/lcov.info \
-            --compare-branch="origin/${BASE_REF}" \
-            --format "markdown:patch-coverage.md"
-          {
-            echo '## Patch coverage (informational)'
-            cat patch-coverage.md
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Post patch coverage comment
-        # Same-repo PRs get an auto-updating comment; `header` keeps it to a
-        # single comment across pushes instead of one per run. On fork PRs the
-        # read-only token makes this a harmless no-op (the Step Summary above
-        # remains the fallback), and the job's continue-on-error absorbs it.
-        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+      - name: Upload coverage report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          header: patch-coverage
-          path: patch-coverage.md
+          name: coverage-${{ matrix.artifact }}
+          path: coverage
+
+  coverage-report:
+    name: Coverage report (informational)
+    # Posts the vitest coverage summary (totals + delta vs base + changed files)
+    # as an auto-updating PR comment. This job holds the only elevated permission
+    # in the workflow and, crucially, never checks out or runs repository code -
+    # it only downloads the artifacts produced above and comments. That keeps the
+    # write token away from PR-authored code. Non-blocking via continue-on-error.
+    if: github.event_name == 'pull_request'
+    needs: coverage
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    # Scoped to this job only; the workflow top-level stays `contents: read`.
+    # `contents: read` is restated because a job-level block replaces the default.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download PR coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-pull-request
+          path: coverage
+
+      - name: Download base coverage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: coverage-base
+          path: coverage-base
+
+      - name: Report coverage
+        uses: davelosert/vitest-coverage-report-action@8b157684c6a6b259b97d45e72b44242865c0f6a5 # v2.12.2
+        with:
+          json-summary-compare-path: coverage-base/coverage-summary.json
