@@ -23,6 +23,12 @@ import {
 import type { AuthProviderId } from "../../auth/types.js";
 import { isCredentialConfigured } from "./steps.js";
 
+// THROWAWAY: temporary probe to prove the patch-coverage PR comment renders on a
+// source-touching diff. This top-level expression runs when format.test.ts
+// imports this module, so diff-cover should report it as a covered changed line.
+// Revert this line before merging.
+export const PATCH_COVERAGE_PROBE = ["demo"].length;
+
 export function getAwsCredentialRepairMessage(
   provider: OpenWikiProvider,
 ): string | null {
