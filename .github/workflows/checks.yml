@@ -183,3 +183,55 @@ jobs:
         uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
         with:
           sarif_file: trivy-results.sarif
+
+  patch-coverage:
+    name: Patch coverage (informational)
+    # Reports how well a PR's own changed lines are covered, as a non-blocking
+    # signal only. `continue-on-error` plus the absence of `--fail-under` means
+    # this job can never turn a PR red; it writes only to the run's Step Summary
+    # and requests no extra permissions (no PR comment, no `pull-requests:
+    # write`). It runs on `pull_request` (read-only token, no fork secrets).
+    if: github.event_name == 'pull_request'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # diff-cover compares the working tree against the base branch, so the
+          # shallow default checkout is not enough; fetch full history.
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run coverage
+        run: pnpm run coverage
+
+      - name: Install diff-cover
+        run: pipx install diff-cover
+
+      - name: Report patch coverage
+        # BASE_REF is passed via env, not interpolated into the shell, so a base
+        # branch name can never be parsed as a shell token.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          diff-cover coverage/lcov.info \
+            --compare-branch="origin/${BASE_REF}" \
+            --format "markdown:patch-coverage.md"
+          {
+            echo '## Patch coverage (informational)'
+            cat patch-coverage.md
+          } >> "$GITHUB_STEP_SUMMARY"
