@@ -188,12 +188,19 @@ jobs:
     name: Patch coverage (informational)
     # Reports how well a PR's own changed lines are covered, as a non-blocking
     # signal only. `continue-on-error` plus the absence of `--fail-under` means
-    # this job can never turn a PR red; it writes only to the run's Step Summary
-    # and requests no extra permissions (no PR comment, no `pull-requests:
-    # write`). It runs on `pull_request` (read-only token, no fork secrets).
+    # this job can never turn a PR red. It runs on `pull_request` (not
+    # pull_request_target), so on fork PRs the token is read-only and the comment
+    # step no-ops harmlessly while the Step Summary still renders.
     if: github.event_name == 'pull_request'
     continue-on-error: true
     runs-on: ubuntu-latest
+    # `pull-requests: write` is scoped to this one job so it can post the sticky
+    # coverage comment; the workflow's top-level permission stays `contents:
+    # read`. `contents: read` is repeated here because a job-level block replaces
+    # the top-level default rather than extending it.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -235,3 +242,13 @@ jobs:
             echo '## Patch coverage (informational)'
             cat patch-coverage.md
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post patch coverage comment
+        # Same-repo PRs get an auto-updating comment; `header` keeps it to a
+        # single comment across pushes instead of one per run. On fork PRs the
+        # read-only token makes this a harmless no-op (the Step Summary above
+        # remains the fallback), and the job's continue-on-error absorbs it.
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: patch-coverage
+          path: patch-coverage.md
