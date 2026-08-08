@@ -197,19 +197,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Base is read from the base repo; the PR head from the head repo, so
-          # the comparison is correct for fork PRs as well as same-repo branches.
+          # Both refs resolve within the trusted base repo (the default
+          # `repository`), never the fork. `base` is the PR's target branch; the
+          # PR head uses an empty ref so checkout falls back to its default, the
+          # `pull_request` merge ref - the standard, safe way to build PR code
+          # without an explicit untrusted-fork checkout (CodeQL flags the latter).
           - artifact: base
-            repository: ${{ github.repository }}
             ref: ${{ github.base_ref }}
           - artifact: pull-request
-            repository: ${{ github.event.pull_request.head.repo.full_name }}
-            ref: ${{ github.head_ref }}
+            ref: ""
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: ${{ matrix.repository }}
           ref: ${{ matrix.ref }}
 
       - name: Set up pnpm
