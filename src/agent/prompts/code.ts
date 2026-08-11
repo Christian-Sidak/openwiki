@@ -212,29 +212,25 @@ Your job is to update the codebase's wiki by inspecting all changes made via git
 The codebase's wiki can be found in the root of the repository inside the '/openwiki' directory.
 
 Update workflow:
-- First, run the following git command to get the full list of commits since the last update was ran: 'git log --oneline <commit-hash>..HEAD' - you can find the last commit hash inside '/openwiki/.last-update.json' file under the 'gitHead' key.
-- Once you have the full list of commits since the last update, inspect the diffs for each to determine whether or not an update to the wiki is needed. The wiki should be updated if:
-  - API changes (endpoints, inputs/response schemas, deprecated fields, etc)
-  - Configuration changes (environment variables, feature flags, rate limits, etc)
-  - Behavior changes (altered business rules, validation, permissions, etc)
-  - Architecture changes (new services, dependencies, queues, databases, data flows, etc)
-  - Operational changes (build, deployment, migration, rollback, monitoring, alerting, etc)
-  - Setup and workflow changes (installation steps, local development commands, prerequisites, test commands, release processes, etc)
-  - Data-model changes (schemas, migrations, field semantics, etc)
-  - Security changes (authentication, authorization, credential handling, permissions, etc)
-  - User-facing changes (renamed concepts, new workflows, changed UI behavior, etc)
-  - Compatibility changes (supported language versions, platforms, browsers, dependencies, etc)
-  - Removal or deprecation (e.g.: anything documented that is no longer available or is scheduled for removal).
-  - Other important fixes (e.g.: bug fixes that reveal prior documentation was wrong, especially around edge cases or expected behavior)
-- Preform these inspections WITHOUT looking at the current wiki, ONLY using the git diffs. You do NOT want to be influenced by what's already documented, or how it's documented.
-- After identifying which parts of the codebase need to be updated, you should then identify what parts of the wiki need to be updated to reflect these changes.
-  - If there isn't an existing wiki doc for what you want to document, create one in the relevant location. Do not be scared off by the wiki not already documenting something. This could've been an oversight from a previous update run.
-- Finally, preform the updates or additions to the codebase.
+- Read only '/openwiki/.last-update.json' and, if it exists, '/openwiki/INSTRUCTIONS.md' before inspecting generated wiki pages.
+- Set BASE to the 'gitHead' value from '/openwiki/.last-update.json'.
+- If BASE equals HEAD, stop without creating '_plan.md' or editing wiki files.
+1. Invoke 'update_plan_builder' with BASE, HEAD, and '/openwiki/_plan.md'. Do not inspect generated wiki pages or edit the wiki before it finishes.
+2. Invoke 'update_plan_verifier' with BASE, HEAD, and the plan path before inspecting generated wiki pages. It must independently confirm that every non-generated changed hunk maps to one atomic contract row or one individually justified skipped item.
+3. If plan verification requests changes, invoke 'update_plan_builder' exactly once more with every verifier item. Do not invoke 'update_plan_verifier' again. Continue to implementation after this single reconciliation pass.
+4. Read the verified plan. Inspect the existing wiki and assign every behavior row one canonical target page. Create a page only when no existing page is an appropriate home.
+5. Group plan rows by target page. Create implementation batches whose page sets do not overlap.
+6. Launch all 'update_wiki_implementer' batches together in one parallel tool-call message. Give each batch its exact behavior IDs, atomic clause IDs, contracts, evidence hunks, and target pages. Never assign the same page to concurrent implementers.
+7. After all implementation batches finish, record each returned clause location in the plan's Verified at column. Keep a row todo when any clause lacks an exact page#section. Then invoke 'update_wiki_verifier' with BASE, HEAD, and the plan path.
+8. If verification requests changes, add every NEW item to the plan. Assign each failed or new item a target page. Run exactly one repair wave with disjoint 'update_wiki_implementer' batches and record every returned clause location. Do not invoke 'update_wiki_verifier' again.
+9. Reconcile the repaired plan once. Keep a row todo until every clause has an exact page#section from an implementer. Delete '/openwiki/_plan.md' only after every row is done. Do not start another plan-verifier or wiki-verifier loop.
 
 Wiki update rules:
-- If something was removed/deleted, you do not need to document this. E.g. don't say "X feature was removed" - this will not be helpful to coding agents.
-  - These wikis are designed to aid in future development in the repo by coding agents. So, if a feature or API doesn't exist anymore, the docs for it should be outright deleted and no mention of it is necessary (unless it does genuinely affect some other part of the codebase and MUST be documented)
-- Preform surgical updates - only update the parts of the wiki that need to be updated. Do not rewrite entire files if only a small part of it needs to be updated.
+- When a behavior or API was removed, delete obsolete wiki content instead of documenting removal history.
+- Create a behavior row when a removal requires existing wiki content to change.
+- Verify a removal with evidence such as 'removed from page.md#section' or 'obsolete page deleted'.
+- Mention historical removal only when it remains a durable compatibility or migration concern.
+- Perform surgical updates. Update only the wiki content affected by the changed behavior.
 - Avoid compounding additions. If parts of the wiki can be merged, or are unnecessarily verbose, refactor them.
 - Your goal is to be succinct, while still documenting everything relevant to coding agents working in the repository.
 - Reference specific file paths in the codebase when documenting changes, and be as specific as possible. This is so a coding agent can read a wiki doc, and go directly to the part of the codebase it's documenting.
@@ -335,7 +331,7 @@ Wiki brief:
 {RUNTIME_CONTEXT}`,
   update: `Update the existing OpenWiki documentation for this repository.
 
-Inspect the target repository's openwiki/ directory, read /openwiki/.last-update.json to find the last documented \`gitHead\`, compare it with the current HEAD, and inspect that Git history and diff yourself.
+First read only /openwiki/.last-update.json and, if present, /openwiki/INSTRUCTIONS.md. Use the recorded gitHead as BASE and follow the update subagent workflow. Do not inspect generated wiki pages before 'update_plan_builder' finishes.
 Update every documentation page needed to keep the wiki accurate, complete, and correctly linked.
 Preserve unrelated accurate content and avoid formatting-only changes.
 
