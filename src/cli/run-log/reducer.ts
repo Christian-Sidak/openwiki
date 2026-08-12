@@ -5,19 +5,15 @@ import type { RunLogItem } from "./types.js";
 
 /**
  * Folds a single run event into the activity log, returning the next log.
- * Empty and subgraph text events are dropped, tool events update the tool
- * group in place, and consecutive assistant text is concatenated onto the last
- * line; other events append a new line and advance `nextLogId`.
+ * Empty text events are dropped, tool events update the tool group in place,
+ * and consecutive assistant text is concatenated onto the last line; other
+ * events append a new line and advance `nextLogId`.
  */
 export function appendRunLogEvent(
   log: RunLogItem[],
   event: OpenWikiRunEvent,
   nextLogId: React.MutableRefObject<number>,
 ): RunLogItem[] {
-  if (event.type === "text" && event.source === "subgraph") {
-    return log;
-  }
-
   if (event.type === "text" && event.text.length === 0) {
     return log;
   }

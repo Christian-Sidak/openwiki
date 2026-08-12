@@ -162,7 +162,7 @@ describe("ClaimsStore", () => {
 
     await writeFile(sidecarPath, "{not json", "utf8");
     await expect(store.loadPage("/openwiki/page.md")).rejects.toThrow(
-      ClaimsPersistenceError,
+      "openwiki/.claims/page.json",
     );
 
     const invalidValues: unknown[] = [

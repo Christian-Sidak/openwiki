@@ -32,6 +32,7 @@ describe("code-brain claim paths", () => {
   test("recognizes factual Markdown pages", () => {
     expect(isGroundedWikiPage("/openwiki/quickstart.md")).toBe(true);
     expect(isGroundedWikiPage("/openwiki/architecture/overview.md")).toBe(true);
+    expect(isGroundedWikiPage("/openwiki/_skeleton.md")).toBe(true);
     expect(isGroundedWikiPage("/openwiki/architecture/overview.txt")).toBe(
       false,
     );
@@ -44,7 +45,6 @@ describe("code-brain claim paths", () => {
     "/openwiki/log.md",
     "/openwiki/INSTRUCTIONS.md",
     "/openwiki/_plan.md",
-    "/openwiki/_skeleton.md",
     "/openwiki/.claims/page.md",
     "/openwiki/.CLAIMS/page.md",
     "/openwiki/nested/.claims/page.md",

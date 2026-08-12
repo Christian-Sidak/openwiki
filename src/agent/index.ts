@@ -489,6 +489,7 @@ function createOpenWikiAgentGraph(
                         text: `${message}\n\n`,
                       });
                     },
+                    options.claimsRuntime?.session,
                   ),
                 ]
               : []),
@@ -1411,7 +1412,7 @@ export function parseAgentStreamChunk(chunk: unknown): OpenWikiRunEvent | null {
     return null;
   }
 
-  const [namespace, mode, payload] = chunk;
+  const [, mode, payload] = chunk;
 
   if (mode === "tools") {
     return parseToolStreamEvent(payload);
@@ -1421,7 +1422,6 @@ export function parseAgentStreamChunk(chunk: unknown): OpenWikiRunEvent | null {
 
   return text.length > 0
     ? {
-        source: namespace.length > 1 ? "subgraph" : "main",
         type: "text",
         text,
       }
@@ -1439,7 +1439,6 @@ export function parseStreamEvent(chunk: unknown): OpenWikiRunEvent | null {
 
     return text.length > 0
       ? {
-          source: chunk.params.namespace.length > 1 ? "subgraph" : "main",
           type: "text",
           text,
         }

@@ -135,4 +135,31 @@ describe("createOpenWikiContentSnapshot recursion", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  test("includes claim sidecars while excluding run metadata", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "openwiki-utils-claims-"));
+
+    try {
+      const claimsDir = path.join(cwd, "openwiki", ".claims");
+      await mkdir(claimsDir, { recursive: true });
+      await writeFile(path.join(cwd, "openwiki", "page.md"), "# Page\n");
+      await writeFile(path.join(claimsDir, "page.json"), '{"revision":1}\n');
+      const before = await createOpenWikiContentSnapshot(cwd, "repository");
+
+      await writeFile(
+        path.join(cwd, "openwiki", ".last-update.json"),
+        '{"status":"complete"}\n',
+      );
+      expect(await createOpenWikiContentSnapshot(cwd, "repository")).toBe(
+        before,
+      );
+
+      await writeFile(path.join(claimsDir, "page.json"), '{"revision":2}\n');
+      expect(await createOpenWikiContentSnapshot(cwd, "repository")).not.toBe(
+        before,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

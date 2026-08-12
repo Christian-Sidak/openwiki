@@ -9,7 +9,6 @@ export type OpenWikiRunResult = {
 
 export type OpenWikiRunEvent =
   | {
-      source?: "main" | "subgraph";
       type: "text";
       text: string;
     }

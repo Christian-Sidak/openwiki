@@ -324,6 +324,28 @@ describe("Claims production run lifecycle", () => {
     ).resolves.toEqual(expect.objectContaining({ status: "interrupted" }));
   });
 
+  test("interrupts without advancing sidecars when evidence changes during the run", async () => {
+    const cwd = await createRepository();
+    graphHarness.streamBehavior.mockImplementation(
+      async (options: CapturedGraphOptions) => {
+        await groundAndWritePage(options, "/openwiki/page.md");
+        await writeFile(path.join(cwd, "README.md"), "# Changed repository\n");
+      },
+    );
+
+    await expect(
+      runOpenWikiAgent("init", cwd, { outputMode: "repository" }),
+    ).rejects.toThrow("Evidence changed before finalizing");
+
+    const store = new ClaimsStore(cwd);
+    await expect(store.loadPage("/openwiki/page.md")).resolves.toBeNull();
+    await expect(
+      readFile(path.join(cwd, "openwiki/.last-update.json"), "utf8").then(
+        JSON.parse,
+      ),
+    ).resolves.toEqual(expect.objectContaining({ status: "interrupted" }));
+  });
+
   test("never advances sidecars when the agent stream fails", async () => {
     const cwd = await createRepository();
     graphHarness.streamBehavior.mockImplementation(

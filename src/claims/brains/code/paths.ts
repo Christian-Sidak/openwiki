@@ -14,7 +14,6 @@ export const RESERVED_WIKI_FILES: ReadonlySet<string> = new Set([
   "log.md",
   "instructions.md",
   "_plan.md",
-  "_skeleton.md",
 ]);
 
 /**

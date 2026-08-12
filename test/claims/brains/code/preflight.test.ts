@@ -237,6 +237,26 @@ describe("runClaimsPreflight", () => {
     await expect(store.loadPage(orphanPage)).resolves.not.toBeNull();
   });
 
+  test("classifies a page rename as one orphan and one ungrounded page", async () => {
+    const oldPage = "/openwiki/old-name.md";
+    const newPage = "/openwiki/new-name.md";
+    await writePage(newPage, "# Renamed\n");
+    const store = new ClaimsStore(rootDir);
+    await store.writePage(oldPage, {
+      schemaVersion: 1,
+      pageVersion: `sha256:${"f".repeat(64)}`,
+      claims: [],
+    });
+
+    const result = await runClaimsPreflight(store, createResolver(new Map()));
+
+    expect(result.context.issues).toEqual([
+      { page: newPage, kind: "ungrounded-page" },
+    ]);
+    expect(result.orphanPages).toEqual([oldPage]);
+    await expect(store.loadPage(oldPage)).resolves.not.toBeNull();
+  });
+
   test("returns issues in stable page, kind, and claim order", async () => {
     const alpha = "/openwiki/alpha.md";
     const zeta = "/openwiki/zeta.md";

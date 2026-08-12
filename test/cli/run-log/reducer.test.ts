@@ -19,18 +19,11 @@ describe("appendRunLogEvent text handling", () => {
     expect(ref.current).toBe(1);
   });
 
-  test("drops empty and subgraph text without touching the log", () => {
+  test("drops empty text without touching the log", () => {
     const existing: RunLogItem[] = [{ id: 0, type: "text", content: "a" }];
 
     expect(
       appendRunLogEvent(existing, { type: "text", text: "" }, idRef()),
-    ).toBe(existing);
-    expect(
-      appendRunLogEvent(
-        existing,
-        { type: "text", source: "subgraph", text: "x" },
-        idRef(),
-      ),
     ).toBe(existing);
   });
 

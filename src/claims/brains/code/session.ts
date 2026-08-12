@@ -83,6 +83,33 @@ interface WorkingPageState {
    * @default false.
    */
   deleted: boolean;
+
+  /**
+   * Whether deterministic preflight requires agent-owned reconciliation.
+   */
+  requiresReconciliation: boolean;
+}
+
+/**
+ * One synchronized page frozen for a finalization pass.
+ */
+interface FinalizablePage {
+  /**
+   * Canonical generated-page path.
+   */
+  page: string;
+
+  /**
+   * Mutable run state selected at the start of finalization.
+   */
+  state: WorkingPageState;
+
+  /**
+   * Hash of the finalized Markdown.
+   *
+   * @default undefined when the page was deleted.
+   */
+  pageVersion?: string;
 }
 
 /**
@@ -133,6 +160,7 @@ export class ClaimSession {
         pendingMutation: Promise.resolve(),
         revision: 0,
         deleted: false,
+        requiresReconciliation: issuePages.has(normalizedPage),
       });
     }
     for (const page of issuePages) {
@@ -142,6 +170,7 @@ export class ClaimSession {
           pendingMutation: Promise.resolve(),
           revision: 0,
           deleted: false,
+          requiresReconciliation: true,
         });
       }
     }
@@ -216,15 +245,21 @@ export class ClaimSession {
   }
 
   /**
-   * Returns claims to OpenWiki-owned transforms without satisfying agent fetch ordering.
+   * Returns factual constraints for an OpenWiki-owned translation.
+   *
+   * A code-owned translation may bypass the agent fetch tool only when the page
+   * existed in valid persisted state and deterministic preflight found no issue.
    *
    * @param pageInput - Virtual generated-page path.
-   * @returns Complete cloned working claims.
+   * @returns Complete cloned claims, or `null` when the agent must reconcile it.
    */
-  inspectClaims(pageInput: string): Claim[] {
-    return cloneClaims(
-      this.getOrCreatePage(normalizeWikiPagePath(pageInput)).claims,
-    );
+  getOwnedTranslationClaims(pageInput: string): Claim[] | null {
+    const page = normalizeWikiPagePath(pageInput);
+    const state = this.pages.get(page);
+    if (!state || state.requiresReconciliation) {
+      return null;
+    }
+    return cloneClaims(state.claims);
   }
 
   /**
@@ -287,47 +322,97 @@ export class ClaimSession {
   /**
    * Records a Claims-constrained OpenWiki-owned translation.
    *
-   * Translation receives the complete current claims directly from the session,
-   * so it is equivalent to a code-owned fetch and write at the unchanged revision.
+   * This records only the code-owned write; a later agent edit still requires
+   * its own `fetch_claims` call.
    *
    * @param pageInput - Virtual generated-page path.
    */
   recordOwnedTranslation(pageInput: string): void {
     const page = normalizeWikiPagePath(pageInput);
-    const state = this.getOrCreatePage(page);
-    state.fetchedRevision = state.revision;
+    if (this.getOwnedTranslationClaims(page) === null) {
+      throw new ClaimSessionError(
+        `Cannot translate ${page} outside agent reconciliation.`,
+      );
+    }
+    const state = this.pages.get(page);
+    if (!state) {
+      throw new ClaimSessionError(`Missing working state for ${page}.`);
+    }
+    state.fetchedRevision = undefined;
     state.writtenRevision = state.revision;
     state.deleted = false;
   }
 
   /**
-   * Persists only pages synchronized during this successful run.
+   * Persists pages synchronized during this successful run.
    *
-   * Unaddressed pages keep their prior sidecars or remain sidecar-free, preserving
-   * their stale or ungrounded signal for the next preflight.
+   * Unaddressed pages keep their prior state. Every eligible page is rechecked
+   * against current evidence and finalized Markdown before sidecars are mutated.
    *
    * @param store - OpenWiki-owned claim persistence.
    */
   async finalize(store: ClaimsStore): Promise<void> {
-    for (const orphan of this.orphanPages) {
-      await store.deletePage(orphan);
-    }
+    const ready: FinalizablePage[] = [];
 
     for (const [page, state] of this.pages) {
       await state.pendingMutation;
       if (state.writtenRevision !== state.revision) {
         continue;
       }
-      if (state.deleted) {
-        await store.deletePage(page);
+      await this.assertEvidenceStillCurrent(page, state.claims);
+      ready.push({
+        page,
+        state,
+        pageVersion: state.deleted ? undefined : await store.hashPage(page),
+      });
+    }
+
+    for (const orphan of this.orphanPages) {
+      await store.deletePage(orphan);
+    }
+
+    for (const item of ready) {
+      if (item.state.deleted) {
+        await store.deletePage(item.page);
         continue;
       }
-
-      await store.writePage(page, {
+      if (!item.pageVersion) {
+        throw new ClaimSessionError(
+          `Missing finalized page version for ${item.page}.`,
+        );
+      }
+      await store.writePage(item.page, {
         schemaVersion: CODE_CLAIMS_SCHEMA_VERSION,
-        pageVersion: await store.hashPage(page),
-        claims: cloneClaims(state.claims),
+        pageVersion: item.pageVersion,
+        claims: cloneClaims(item.state.claims),
       });
+    }
+  }
+
+  /**
+   * Verifies that a page's evidence still matches the versions accepted this run.
+   *
+   * @param page - Canonical virtual generated-page path.
+   * @param claims - Complete claims about to be persisted.
+   */
+  private async assertEvidenceStillCurrent(
+    page: string,
+    claims: readonly Claim[],
+  ): Promise<void> {
+    for (const claim of claims) {
+      for (const evidence of claim.evidence) {
+        const current = await this.resolver.resolve(evidence.resource);
+        if (!current) {
+          throw new ClaimSessionError(
+            `Evidence disappeared before finalizing ${page}: ${evidence.resource}`,
+          );
+        }
+        if (current.evidence.version !== evidence.version) {
+          throw new ClaimSessionError(
+            `Evidence changed before finalizing ${page}: ${evidence.resource}`,
+          );
+        }
+      }
     }
   }
 
@@ -347,6 +432,7 @@ export class ClaimSession {
       pendingMutation: Promise.resolve(),
       revision: 0,
       deleted: false,
+      requiresReconciliation: true,
     };
     this.pages.set(page, created);
     return created;

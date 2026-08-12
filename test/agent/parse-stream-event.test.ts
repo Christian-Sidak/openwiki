@@ -8,12 +8,12 @@ import type { OpenWikiRunEvent } from "../../src/agent/types.ts";
 // "tool activity", and "ignore" must hold up against malformed and adversarial
 // shapes. stream-redaction.test.ts already covers content-block suppression on
 // the `messages` tuple path; these cases exercise the remaining discrimination
-// branches (protocol guard, subgraph tagging, nested/serialized message
-// shapes, delta variants, and the whole `tools` branch) that path never hits.
+// branches (protocol guard, nested/serialized message shapes, delta variants,
+// and the whole `tools` branch) that path never hits.
 
 /**
  * Wraps a `messages` payload in the normalized protocol-event envelope that
- * isProtocolStreamEvent() accepts. `namespace` length > 1 marks a subgraph.
+ * isProtocolStreamEvent() accepts.
  */
 function messagesChunk(data: unknown, namespace: unknown[] = []): unknown {
   return {
@@ -70,22 +70,12 @@ function toolsChunkWithMethod(method: string): unknown {
   return { type: "event", method, params: { data: {}, namespace: [] } };
 }
 
-describe("parseStreamEvent – messages source tagging", () => {
-  test("top-level namespace tags the event as coming from the main graph", () => {
+describe("parseStreamEvent – message normalization", () => {
+  test("normalizes a top-level message event", () => {
     const event = parseStreamEvent(messagesChunk("hello from main", []));
 
-    expect(event).toMatchObject({ source: "main", type: "text" });
+    expect(event).toMatchObject({ type: "text" });
     expect(expectText(event)).toBe("hello from main");
-  });
-
-  test("a nested namespace tags the event as coming from a subgraph", () => {
-    // isSubgraphProtocolEvent keys off namespace.length > 1, so a two-segment
-    // namespace routes streamed text through the subgraph label.
-    const event = parseStreamEvent(
-      messagesChunk("hello from sub", ["parent", "child"]),
-    );
-
-    expect(event).toMatchObject({ source: "subgraph", type: "text" });
   });
 });
 
