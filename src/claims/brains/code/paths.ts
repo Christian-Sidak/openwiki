@@ -58,10 +58,11 @@ export function isGroundedWikiPage(page: string): boolean {
   const normalized = path.posix.normalize(`/${slashed.replace(/^\/+/, "")}`);
   const normalizedLower = normalized.toLowerCase();
   const basename = path.posix.basename(normalizedLower);
+  const segments = normalizedLower.split("/");
   return (
     normalized.startsWith("/openwiki/") &&
     normalized.endsWith(".md") &&
-    !normalizedLower.startsWith("/openwiki/.claims/") &&
+    !segments.includes(CLAIMS_DIRECTORY) &&
     !RESERVED_WIKI_FILES.has(basename)
   );
 }

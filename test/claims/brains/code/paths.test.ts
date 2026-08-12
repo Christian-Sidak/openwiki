@@ -47,6 +47,7 @@ describe("code-brain claim paths", () => {
     "/openwiki/_skeleton.md",
     "/openwiki/.claims/page.md",
     "/openwiki/.CLAIMS/page.md",
+    "/openwiki/nested/.claims/page.md",
   ])("excludes structural path %s", (page) => {
     expect(isGroundedWikiPage(page)).toBe(false);
     expect(() => normalizeWikiPagePath(page)).toThrow(ClaimSessionError);
