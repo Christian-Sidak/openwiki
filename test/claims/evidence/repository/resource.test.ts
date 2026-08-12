@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { EvidenceResourceError } from "../../../../src/claims/core/errors.ts";
 import {
+  formatRepositoryEvidenceResource,
   parseRepositoryEvidenceResource,
   REPOSITORY_EVIDENCE_PREFIX,
 } from "../../../../src/claims/evidence/repository/resource.ts";
@@ -33,6 +34,26 @@ describe("parseRepositoryEvidenceResource", () => {
 
   test("exports the stable repository namespace", () => {
     expect(REPOSITORY_EVIDENCE_PREFIX).toBe("repo://");
+  });
+
+  test("formats canonical resources without escaping path separators", () => {
+    expect(
+      formatRepositoryEvidenceResource({
+        path: "src/feature#flags.ts",
+        symbol: "Feature#enabled",
+      }),
+    ).toBe("repo://src/feature%23flags.ts#Feature%23enabled");
+  });
+
+  test.each([
+    { path: "src/../secret.ts" },
+    { path: "src\\config.ts" },
+    { path: "openwiki/page.md" },
+    { path: "src/config.ts", symbol: " " },
+  ])("rejects non-normalized formatter input %#", (resource) => {
+    expect(() => formatRepositoryEvidenceResource(resource)).toThrow(
+      EvidenceResourceError,
+    );
   });
 
   test.each([

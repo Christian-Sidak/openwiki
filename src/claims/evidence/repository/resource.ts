@@ -24,6 +24,44 @@ export interface RepositoryEvidenceResource {
 }
 
 /**
+ * Formats a validated repository evidence identity canonically.
+ *
+ * @param resource - Normalized repository path and optional symbol.
+ * @returns Canonical `repo://path#symbol` resource.
+ */
+export function formatRepositoryEvidenceResource(
+  resource: RepositoryEvidenceResource,
+): string {
+  let encodedPath: string;
+  let encodedSymbol: string | undefined;
+  try {
+    encodedPath = resource.path
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    encodedSymbol =
+      resource.symbol === undefined
+        ? undefined
+        : encodeURIComponent(resource.symbol);
+  } catch {
+    throw new EvidenceResourceError(
+      "Repository evidence contains an invalid Unicode sequence.",
+    );
+  }
+
+  const formatted = `${REPOSITORY_EVIDENCE_PREFIX}${encodedPath}${
+    encodedSymbol === undefined ? "" : `#${encodedSymbol}`
+  }`;
+  const parsed = parseRepositoryEvidenceResource(formatted);
+  if (parsed.path !== resource.path || parsed.symbol !== resource.symbol) {
+    throw new EvidenceResourceError(
+      `Repository evidence is not normalized: ${formatted}`,
+    );
+  }
+  return formatted;
+}
+
+/**
  * Parses and validates a `repo://path#symbol` resource.
  *
  * @param resource - Repository evidence URI to parse.
