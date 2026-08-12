@@ -3,6 +3,9 @@ import {
   type StructuredToolInterface,
 } from "@langchain/core/tools";
 import { z } from "zod";
+import type { DeleteResult } from "deepagents";
+import { ClaimSessionError } from "../../core/errors.js";
+import { normalizeWikiPagePath } from "./paths.js";
 import { ClaimSession } from "./session.js";
 
 /**
@@ -67,6 +70,23 @@ const UpdateClaimsInputSchema = z
 const FetchClaimsInputSchema = z
   .object({ page: CanonicalNonEmptyStringSchema })
   .strict();
+
+/**
+ * Runtime validator for the DeepAgents-compatible `delete_file` input.
+ */
+const DeleteFileInputSchema = z
+  .object({ file_path: CanonicalNonEmptyStringSchema })
+  .strict();
+
+/**
+ * Guarded backend capability required by the Claims page-deletion tool.
+ */
+interface ClaimsDeletionBackend {
+  /**
+   * Deletes one canonical generated page.
+   */
+  delete(filePath: string): Promise<DeleteResult>;
+}
 
 /**
  * Creates the repository-only Claims tools for one run.
@@ -158,6 +178,50 @@ export function createClaimsTools(
       },
     }),
   ];
+}
+
+/**
+ * Creates the repository page-deletion tool missing from DeepAgents 1.12.
+ *
+ * The tool owns successful deletion recording because the upstream filesystem
+ * middleware does not expose `delete_file`. The Claims authoring middleware
+ * still performs the recoverable pre-call ordering check.
+ *
+ * @param session - Run-scoped authoritative claim state.
+ * @param backend - Guarded OpenWiki filesystem backend.
+ * @returns Model-facing page deletion tool.
+ */
+export function createClaimsDeleteFileTool(
+  session: ClaimSession,
+  backend: ClaimsDeletionBackend,
+): StructuredToolInterface {
+  return new DynamicStructuredTool({
+    name: "delete_file",
+    description:
+      "Delete one generated factual wiki page after deleting all of its claims and calling fetch_claims for the empty set.",
+    schema: {
+      type: "object",
+      properties: { file_path: { type: "string", minLength: 1 } },
+      required: ["file_path"],
+      additionalProperties: false,
+    } as const,
+    func: async (input) => {
+      const parsed = DeleteFileInputSchema.parse(input);
+      const page = normalizeWikiPagePath(parsed.file_path);
+      session.assertReadyForDeletion(page);
+      const result = await backend.delete(page);
+      if (result.error) {
+        return JSON.stringify({ error: result.error });
+      }
+      if (!result.path) {
+        throw new ClaimSessionError(
+          `Deletion backend did not confirm the deleted path: ${page}`,
+        );
+      }
+      session.recordDeletion(page);
+      return JSON.stringify({ deleted: page });
+    },
+  });
 }
 
 /**

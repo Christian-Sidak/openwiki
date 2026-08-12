@@ -115,6 +115,7 @@ Hard constraints:
 - Filesystem / is the repository root. Read repository source as evidence, but write generated files only under /openwiki. Do not modify source code, /AGENTS.md, /CLAUDE.md, or /openwiki/INSTRUCTIONS.md.
 - Read /openwiki/INSTRUCTIONS.md when present; it is the user-authored scope and priority brief, not generated documentation.
 - Never pass ~, ~/.openwiki/wiki, or host paths such as /Users/... to filesystem tools. Shell commands run from the repository runtime root. Do not search parent or unrelated directories.
+- Use shell execute only to inspect repository sources. Never use execute to create, edit, move, or delete generated wiki files; mutate them through filesystem tools so Claims ordering is enforced.
 - Do not read or document secrets, credentials, tokens, private keys, or .env files. Read sample environment files only when they contain placeholders.
 - Directory index.md files are generated after the run. Do not create or edit index.md files.
 - Use targeted ls, glob, grep, rather than broad root scans or full reads of large files.
@@ -123,32 +124,18 @@ Hard constraints:
 {OPENWIKIIGNORE_INSTRUCTIONS}
 
 Init workflow:
-1. Build the map before writing prose. Inventory manifest-backed services, applications, packages, and workspaces; runtime/build entrypoints; public surfaces; major domains; data/schema ownership; operational services; existing docs; and representative tests. Write to a /openwiki/_skeleton.md file to track the skeleton of the wiki you plan on writing.
-2. Rank components and source areas by runtime importance, dependency centrality, change activity in recent history, public surface, and test ownership. Ranking controls exploration order, not whether a substantial component is covered.
-3. Group related files into coherent systems and cross-system workflows using imports, symbols, runtime calls, shared data, tests, and history. Do not copy the directory tree into the wiki.
-4. Create the complete wiki skeleton in the /openwiki/_skeleton.md file before writing the actual files and their contents. Create the directories, and files for the wiki structure.
-  a) For each file in your skeleton, include a description of what you plan to document in said file.
-  b) Ensure EVERY substantial service, API endpoints, and major workflow is included in this structure. Remember: agents will use this wiki to understand the codebase, navigate efficiently, and learn concepts, so the wiki must contain all of this in an easily discoverable and navigable way.
-  c) If an agent or human can't solely use the wiki to gather a complete understanding of the repository, its systems, and workflows, the documentation is insufficient.
-5. Once you've finished deeply researching every part of the repository, and creating the wiki skeleton, invoke the 'skeleton_critic' subagent to review your skeleton.
-  a) Create one TODO for every returned RQ item and resolve every requested change before continuing.
-  b) Re-invoke 'skeleton_critic' exactly once with the complete prior-request ledger and what you did to resolve each item. This is the final critic review. If an item remains UNRESOLVED or a revision introduced a new regression, address that exact item directly and keep its TODO open until resolved; do not invoke the critic a third time.
-6. After completing the wiki skeleton and resolving every critic TODO, fill the contents for every page in the skeleton. A passing mention, directory list, source-map row, or concise overview is not substantive coverage: explain responsibilities, owning entrypoints and symbols, important relationships and invariants, focused tests, and primary evidence when they exist.
-  a) REMEMBER: An agent or human should be able to use the wiki to fully understand the codebase and its systems/workflows without needing to read a single line of code outside of the wiki.
-7. After writing the wiki and its contents, perform an unknown-unknown pass over uncovered manifest-backed or high-ranked clusters, uncited one-hop dependencies, and cross-system workflows revealed during writing. Expand the plan and wiki when this exposes a real gap.
-8. Before finishing, reconcile the final wiki tree against the full inventory. Verify coverage, source grounding, terminology, navigation, and relationship links.
+1. Inventory the repository's manifest-backed components, entrypoints, public surfaces, major domains, data ownership, cross-system workflows, operations, and representative tests.
+2. Create /openwiki/_plan.md. Map every substantial component and workflow to its canonical page, primary source paths and symbols, focused tests, and disposition. Do not copy the directory tree into the wiki.
+3. For each planned factual page:
+  a) Research its source and tests.
+  b) Establish every material factual proposition through update_claims. Prefer repo://path#symbol evidence; use repo://path when symbol evidence is unavailable.
+  c) Call fetch_claims for the page.
+  d) Write the page using the complete fetched claims as its factual backbone. Do not add material repository facts that are absent from the fetched claims.
+4. Perform one top-level unknown-unknown pass over uncovered high-ranked clusters, one-hop dependencies, and cross-system workflows. Expand the plan only for real gaps.
+5. Reconcile the final wiki tree against the inventory and write /openwiki/quickstart.md last, using its own claims.
 - Optimize for path compression: shorten the route from an engineering intent to the owning files and symbols, related systems, focused tests, and narrow validation command.
 - Substantial components and major workflows must be documented during init. Defer only when explicitly outside scope, unavailable to inspect safely, or evidence-blocked. Never defer an area merely because of time, token, page-count, or navigation convenience. Record valid deferrals in a concise Backlog section in quickstart with a source anchor and reason.
 - Do not document every file or target a page count. Wiki depth should reflect meaningful repository complexity.
-- Verify the completed wiki using the 'wiki_question_finder' and 'wiki_answer_verifier' subagents:
-  1. Invoke 'wiki_question_finder'.
-  2. Create one TODO for every returned question ID.
-  3. Before every verification wave, including retries, create the complete batch plan. Group questions that share relevant wiki pages, systems, or evidence into batches of 2–3. A question may run alone only when no other question in that wave has meaningful overlap; do not use one verifier per question by default. Launch all batches for the wave together in one parallel tool-call message. On the initial wave, provide each question's exact ID, text, and acceptance criteria.
-  4. For every PARTIAL or FAIL result, update the canonical wiki pages using the reported missing details. Complete all documentation repairs for the wave before beginning its retry verification; do not launch verifier calls incrementally as individual questions are repaired.
-  5. Re-invoke 'wiki_answer_verifier' only for PARTIAL or FAIL IDs. For each retry provide only the unchanged question ID and text, its prior missing-items list, and the wiki pages changed to resolve it; do not resend acceptance criteria or source evidence. Mark its TODO complete only after PASS. Repeat only for IDs that still do not pass.
-9. Finally, once all the wiki pages are complete, write the /openwiki/quickstart.md file. This should be a high level introduction to the repository wiki, documenting the main sections, concepts and APIs, and providing a quick reference for how to navigate the wiki.
-
-Remember to delete the /openwiki/_skeleton.md file once all wiki files have been created and populated.
 
 Documentation contract:
 - /openwiki/quickstart.md is the entrypoint. Include a high-level map, links to every major concept, and a compact task-routing table from change area or intent to relevant page, source entrypoints/symbols, focused tests, and minimal validation.
@@ -219,6 +206,7 @@ Run discipline:
 - Filesystem tools are rooted at the target repository. Create and update generated wiki pages under /openwiki, such as /openwiki/quickstart.md, /openwiki/architecture/overview.md, or /openwiki/source-map.md.
 - Never pass host absolute paths like /Users/... to filesystem tools; that creates nested paths inside the repo instead of touching the intended file.
 - Shell execute commands run on the host. If you use execute, run commands from the current runtime root unless a source-specific instruction explicitly tells you to inspect a connector raw file or configured local repository path.
+- Use shell execute only to inspect repository sources. Never use execute to create, edit, move, or delete generated wiki files; mutate them through filesystem tools so Claims ordering is enforced.
 {DISCOVERY_INSTRUCTION}
 - Prefer grep/glob and short targeted reads over full-file reads when files are large.
 - Prioritize the most important, durable information. Concise means dense and non-redundant, not short; do not target a page count or page length, and do not omit important domains, independent components, or relationships for brevity.
@@ -226,7 +214,7 @@ Run discipline:
 - Inspect the repository tree, workspace and package manifests, existing docs, entrypoints, routing and schema files, public surfaces, and representative implementation and tests.{OPENWIKIIGNORE_INSTRUCTIONS}
 
 Repository mapping discipline:
-- Start from the existing wiki skeleton and repository inventory. Work directly in the top-level agent; avoid subagents unless the user explicitly requests them.
+- Start from the existing wiki structure and repository inventory. Work directly in the top-level agent; avoid subagents unless the user explicitly requests them.
 - Use git changes, changed manifests, entrypoints, public surfaces, tests, and operational configuration to identify affected systems and cross-system workflows. Rebuild the full inventory only when structural changes or obvious existing coverage gaps make it necessary.
 - Update /openwiki/_plan.md before drafting. Map each affected or newly discovered component and workflow to its page or substantive section with primary source anchors and one disposition: covered, grouped with an explicitly named system, out of scope, or evidence-blocked.
 - Rank affected areas by runtime importance, dependency centrality, public surface, change activity, and test ownership. Follow imports, symbols, runtime calls, shared data, and tests across directory boundaries instead of treating changed files independently.
@@ -235,6 +223,14 @@ Repository mapping discipline:
 - Optimize for path compression from engineering intent to owning files and symbols, related systems, focused tests, and narrow validation.
 - After drafting, inspect uncovered one-hop dependencies and adjacent workflows revealed by the changes. Expand the impact plan only for real gaps; do not rescan or rewrite unrelated well-covered systems.
 - Reconcile the final edits against the affected inventory, then verify source evidence, terminology, navigation, and relationship links. Keep edits centralized in the target repository's openwiki/ directory.
+
+Claim-first authoring:
+- Deterministic preflight lists stale claims, unresolved claims, ungrounded pages, and pages whose Markdown is out of sync with persisted claim state.
+- Investigate every listed issue. Use Git changes to discover new facts and components that no existing claim could reference.
+- Before writing any factual page, reconcile its material claims through update_claims, then call fetch_claims for the complete current page state.
+- Write only after fetch_claims and use the fetched claims as the page's factual backbone.
+- If a fact is obsolete, delete its claim and remove or rewrite the corresponding prose. If the page itself is obsolete, delete all its claims, fetch the empty set, then delete the page.
+- Leave unrelated fresh pages and claims unchanged.
 
 Planning discipline:
 - After discovery and before writing final documentation, create the temporary /openwiki/_plan.md file. Use the affected-system inventory described above. Keep every affected or newly discovered component and workflow disposition explicit, with its intended page, section, and primary source evidence.
@@ -416,6 +412,9 @@ Wiki brief:
   update: `Update the existing OpenWiki documentation for this repository.
 
 Inspect the target repository's openwiki/ directory, read /openwiki/.last-update.json to find the last documented \`gitHead\`, compare it with the current HEAD, and inspect that Git history and diff yourself. Update every documentation page needed to keep the wiki accurate, complete, and correctly linked. Preserve unrelated accurate content and avoid formatting-only changes. If the wiki is already current, do not edit files. The CLI will update /openwiki/.last-update.json only when OpenWiki content changes.
+
+Grounding issues that must be reconciled:
+{GROUNDING_CONTEXT}
 
 Wiki brief:
 {WIKI_GOAL}

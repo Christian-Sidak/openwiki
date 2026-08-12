@@ -289,6 +289,62 @@ describe("createUserPrompt", () => {
     // The block is trimmed, so no leading/trailing whitespace leaks through.
     expect(prompt).not.toContain("  focus on auth  ");
   });
+
+  test("renders compact Claims grounding issues for repository updates", () => {
+    const prompt = createUserPrompt(
+      "update",
+      emptyContext(),
+      null,
+      "repository",
+      "/repo",
+      {
+        issues: [
+          {
+            page: "/openwiki/architecture.md",
+            kind: "stale",
+            claimId: "claim_runtime",
+            resources: ["repo://src/agent/index.ts#runOpenWikiAgent"],
+          },
+        ],
+      },
+    );
+
+    expect(prompt).toContain("Grounding issues that must be reconciled:");
+    expect(prompt).toContain(
+      "- /openwiki/architecture.md: stale claim=claim_runtime resources=repo://src/agent/index.ts#runOpenWikiAgent",
+    );
+  });
+
+  test("does not leak claim statements when no grounding work exists", () => {
+    const prompt = createUserPrompt(
+      "update",
+      emptyContext(),
+      null,
+      "repository",
+      "/repo",
+      { issues: [] },
+    );
+
+    expect(prompt).toContain("No persisted grounding issues were detected.");
+  });
+});
+
+describe("createSystemPrompt Claims workflow", () => {
+  test("uses claim-first init/update authoring without legacy verifier choreography", () => {
+    for (const command of ["init", "update"] as const) {
+      const prompt = createSystemPrompt(command, "repository");
+
+      expect(prompt).toContain("update_claims");
+      expect(prompt).toContain("fetch_claims");
+      expect(prompt).toContain(
+        "Never use execute to create, edit, move, or delete generated wiki files",
+      );
+      expect(prompt).not.toContain("_skeleton.md");
+      expect(prompt).not.toContain("skeleton_critic");
+      expect(prompt).not.toContain("wiki_question_finder");
+      expect(prompt).not.toContain("wiki_answer_verifier");
+    }
+  });
 });
 
 describe("createSystemPrompt diagram guidance", () => {

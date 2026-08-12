@@ -1,4 +1,5 @@
 import type { OpenWikiIgnore } from "./openwiki-ignore.js";
+import type { GroundingContext } from "../claims/brains/code/types.js";
 import { CODE_SYSTEM_PROMPTS, CODE_USER_PROMPTS } from "./prompts/code.js";
 import {
   PERSONAL_SYSTEM_PROMPTS,
@@ -50,12 +51,24 @@ export function createSystemPrompt(
     : `${prompt}\n\n${createLinkIntegrityInstructions()}`.trim();
 }
 
+/**
+ * Builds the command-specific user prompt.
+ *
+ * @param command - Current OpenWiki command.
+ * @param context - Persisted run context.
+ * @param userMessage - Optional user instruction.
+ * @param outputMode - Current output target.
+ * @param runtimeRoot - Optional host runtime root.
+ * @param groundingContext - Optional deterministic Claims worklist.
+ * @returns Fully substituted user prompt.
+ */
 export function createUserPrompt(
   command: OpenWikiCommand,
   context: RunContext,
   userMessage: string | null = null,
   outputMode: OpenWikiOutputMode = "local-wiki",
   runtimeRoot?: string,
+  groundingContext?: GroundingContext,
 ): string {
   const template =
     outputMode === "repository"
@@ -76,7 +89,30 @@ export function createUserPrompt(
       "{RUNTIME_CONTEXT}",
       runtimeRoot ? formatRuntimeContext(runtimeRoot, outputMode) : "",
     )
+    .replace("{GROUNDING_CONTEXT}", formatGroundingContext(groundingContext))
     .trim();
+}
+
+/**
+ * Formats deterministic grounding issues without injecting every claim statement.
+ *
+ * @param context - Optional preflight worklist.
+ * @returns Compact prompt section.
+ */
+function formatGroundingContext(context: GroundingContext | undefined): string {
+  if (!context || context.issues.length === 0) {
+    return "No persisted grounding issues were detected.";
+  }
+
+  return context.issues
+    .map((issue) => {
+      const claim = issue.claimId ? ` claim=${issue.claimId}` : "";
+      const resources = issue.resources?.length
+        ? ` resources=${issue.resources.join(",")}`
+        : "";
+      return `- ${issue.page}: ${issue.kind}${claim}${resources}`;
+    })
+    .join("\n");
 }
 
 export function formatRuntimeRootInstruction(

@@ -27,6 +27,11 @@ export interface ClaimsRuntime {
    * Compact deterministic reconciliation worklist.
    */
   context: GroundingContext;
+
+  /**
+   * Whether grounding issues or orphan cleanup prevent an update no-op.
+   */
+  requiresAttention: boolean;
 }
 
 /**
@@ -64,6 +69,7 @@ export async function prepareClaimsRuntime(
         orphanPages: await store.discoverSidecarPages(),
       }),
       context: { issues: [] },
+      requiresAttention: true,
     };
   }
 
@@ -77,5 +83,7 @@ export async function prepareClaimsRuntime(
       orphanPages: preflight.orphanPages,
     }),
     context: preflight.context,
+    requiresAttention:
+      preflight.context.issues.length > 0 || preflight.orphanPages.length > 0,
   };
 }

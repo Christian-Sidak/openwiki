@@ -60,6 +60,7 @@ describe("prepareClaimsRuntime", () => {
     );
 
     expect(runtime?.context).toEqual({ issues: [] });
+    expect(runtime?.requiresAttention).toBe(true);
     expect(runtime?.session.fetchClaims(orphanPage)).toEqual({
       revision: 0,
       claims: [],
@@ -82,6 +83,7 @@ describe("prepareClaimsRuntime", () => {
     expect(runtime?.context.issues).toEqual([
       { page, kind: "ungrounded-page" },
     ]);
+    expect(runtime?.requiresAttention).toBe(true);
     expect(runtime?.session.fetchClaims(page)).toEqual({
       revision: 0,
       claims: [],
@@ -125,8 +127,30 @@ describe("prepareClaimsRuntime", () => {
         resources: ["repo://package.json"],
       },
     ]);
+    expect(runtime?.requiresAttention).toBe(true);
     expect(runtime?.session.fetchClaims(page).claims).toEqual(
       pageClaims.claims,
     );
+  });
+
+  test("allows update no-op only when persisted Claims state is fresh", async () => {
+    const page = "/openwiki/page.md";
+    await writePage(page, "# Page\n");
+    const store = new ClaimsStore(rootDir);
+    await store.writePage(page, {
+      schemaVersion: 1,
+      pageVersion: await store.hashPage(page),
+      claims: [],
+    });
+
+    const runtime = await prepareClaimsRuntime(
+      "update",
+      "repository",
+      rootDir,
+      new OpenWikiIgnore([]),
+    );
+
+    expect(runtime?.context).toEqual({ issues: [] });
+    expect(runtime?.requiresAttention).toBe(false);
   });
 });

@@ -19,6 +19,15 @@ import {
   type GlobResult,
 } from "deepagents";
 import { createOpenWikiConnectorTools } from "../connectors/tools.js";
+import { createClaimsAuthoringMiddleware } from "../claims/brains/code/middleware.js";
+import {
+  prepareClaimsRuntime,
+  type ClaimsRuntime,
+} from "../claims/brains/code/runtime.js";
+import {
+  createClaimsDeleteFileTool,
+  createClaimsTools,
+} from "../claims/brains/code/tools.js";
 import {
   DEBUG_ENV_KEYS,
   loadOpenWikiEnv,
@@ -57,9 +66,7 @@ import {
   refreshChatGptTokens,
 } from "./openai-chatgpt-oauth.js";
 import { createSystemPrompt, createUserPrompt } from "./prompt.js";
-import { resolveSkeletonCriticSubagents } from "./skeleton_critic.js";
 import { syncBundledSkills } from "./skills.js";
-import { resolveWikiQaSubagents } from "./wiki_qa_subagents.js";
 import {
   createVertexAuthFetch,
   resolveVertexSurface,
@@ -173,8 +180,24 @@ export async function runOpenWikiAgent(
     `openwikiignore.patterns=${openWikiIgnore.patterns.length}`,
   );
 
+  const claimsRuntime = await inStage(
+    "build",
+    () => prepareClaimsRuntime(command, outputMode, runtimeCwd, openWikiIgnore),
+    { errorClass: "build_error", errorDetail: "claims_preflight" },
+  );
+  emitDebug(
+    options,
+    claimsRuntime
+      ? `claims.issues=${claimsRuntime.context.issues.length}`
+      : "claims=disabled",
+  );
+
   if (command === "update" && shouldCheckUpdateNoop(options)) {
-    const noopStatus = await getUpdateNoopStatus(cwd, openWikiIgnore);
+    const noopStatus = await getUpdateNoopStatus(
+      runtimeCwd,
+      openWikiIgnore,
+      claimsRuntime?.requiresAttention ?? false,
+    );
 
     if (noopStatus.shouldSkip) {
       const message =
@@ -218,6 +241,7 @@ export async function runOpenWikiAgent(
       config.modelId,
       config.providerRetryAttempts,
       openWikiIgnore,
+      claimsRuntime,
     );
   } catch (error) {
     // Enrich the error for the CLI's debug/auth UI, then rethrow. The telemetry
@@ -320,7 +344,16 @@ export type OpenWikiAgentOptions = {
   outputMode: OpenWikiOutputMode;
 };
 
-/** Creates an OpenWiki DeepAgent graph from an already-initialized chat model. */
+/**
+ * Creates an OpenWiki DeepAgent graph from an already-initialized chat model.
+ *
+ * This low-level factory prepares runtime state but does not own persisted run
+ * metadata or successful-run Claims finalization. Use {@link runOpenWikiAgent}
+ * for the complete persisted run boundary.
+ *
+ * @param options - Initialized model and graph options.
+ * @returns Configured OpenWiki agent graph.
+ */
 export async function createOpenWikiAgent(
   options: OpenWikiAgentOptions,
 ): Promise<ReturnType<typeof createDeepAgent>> {
@@ -338,6 +371,12 @@ export async function createOpenWikiAgent(
     options.outputMode,
     options.language,
   );
+  const claimsRuntime = await prepareClaimsRuntime(
+    options.command,
+    options.outputMode,
+    options.cwd,
+    openWikiIgnore,
+  );
   const checkpointer = await createCheckpointer(
     resolveCheckpointTarget(options.command),
   );
@@ -347,13 +386,32 @@ export async function createOpenWikiAgent(
     checkpointer,
     context,
     openWikiIgnore,
+    claimsRuntime,
   });
 }
 
 type OpenWikiAgentGraphOptions = OpenWikiAgentOptions & {
+  /**
+   * SQLite graph checkpointer.
+   */
   checkpointer: SqliteSaver;
+
+  /**
+   * Persisted run context.
+   */
   context: RunContext;
+
+  /**
+   * Active repository read boundary.
+   */
   openWikiIgnore: OpenWikiIgnore;
+
+  /**
+   * Repository Claims state for init/update.
+   *
+   * @default undefined for chat and personal-brain runs.
+   */
+  claimsRuntime?: ClaimsRuntime;
 };
 
 function createOpenWikiAgentGraph(
@@ -387,7 +445,18 @@ function createOpenWikiAgentGraph(
 
   return createDeepAgent({
     model: options.model,
-    tools: createOpenWikiConnectorTools(options.outputMode),
+    tools: [
+      ...createOpenWikiConnectorTools(options.outputMode),
+      ...(options.claimsRuntime
+        ? [
+            createClaimsDeleteFileTool(
+              options.claimsRuntime.session,
+              wikiBackend,
+            ),
+            ...createClaimsTools(options.claimsRuntime.session),
+          ]
+        : []),
+    ],
     checkpointer: options.checkpointer,
     backend,
     middleware:
@@ -423,6 +492,9 @@ function createOpenWikiAgentGraph(
                   ),
                 ]
               : []),
+            ...(options.claimsRuntime
+              ? [createClaimsAuthoringMiddleware(options.claimsRuntime.session)]
+              : []),
             createOpenWikiIndexMiddleware(
               wikiBackend,
               options.outputMode,
@@ -431,10 +503,7 @@ function createOpenWikiAgentGraph(
             ),
           ],
     skills: ["/skills/"],
-    subagents: [
-      ...resolveSkeletonCriticSubagents(options.command, options.outputMode),
-      ...resolveWikiQaSubagents(options.command, options.outputMode),
-    ],
+    subagents: [],
     permissions: AGENT_FILESYSTEM_PERMISSIONS,
     systemPrompt: createSystemPrompt(
       options.command,
@@ -453,6 +522,7 @@ async function runOpenWikiAgentCore(
   modelId: string,
   providerRetryAttempts: number,
   openWikiIgnore: OpenWikiIgnore,
+  claimsRuntime: ClaimsRuntime | undefined,
 ): Promise<OpenWikiRunResult> {
   const outputMode = options.outputMode ?? "local-wiki";
   const context = await inStage(
@@ -504,6 +574,7 @@ async function runOpenWikiAgentCore(
         checkpointer,
         context,
         openWikiIgnore,
+        claimsRuntime,
       }),
     { errorClass: "build_error", errorDetail: "agent" },
   );
@@ -513,12 +584,18 @@ async function runOpenWikiAgentCore(
     messages: [
       {
         role: "user",
-        content: createRunUserMessage(command, cwd, context, options),
+        content: createRunUserMessage(
+          command,
+          cwd,
+          context,
+          options,
+          claimsRuntime,
+        ),
       },
     ],
   };
 
-  emitDebug(options, "stream=opening modes=messages,tools subgraphs=true");
+  emitDebug(options, "stream=opening modes=messages,tools subgraphs=false");
   const stream = await inStage(
     "build",
     () =>
@@ -527,17 +604,15 @@ async function runOpenWikiAgentCore(
           thread_id: threadId,
         },
         streamMode: ["messages", "tools"],
-        subgraphs: true,
+        subgraphs: false,
       }),
     { errorClass: "build_error", errorDetail: "stream_open" },
   );
-  emitDebug(options, "stream=started modes=messages,tools subgraphs=true");
+  emitDebug(options, "stream=started modes=messages,tools subgraphs=false");
 
-  // Register with the crash guard for exactly the stream-consumption window: a
-  // subagent rejection surfaces on the microtask queue during streaming and escapes
-  // the for-await catch below, so the guard is what turns that escape into a
-  // recorded, interrupted-stamped failure instead of a silent process abort. The
-  // finally clears the registration so a clean run leaves nothing stale behind.
+  // Register with the crash guard for exactly the stream-consumption window so
+  // escaped runtime failures become interrupted-stamped runs instead of silent
+  // process aborts. The finally clears the registration after every run.
   registerActiveRun({
     command,
     cwd,
@@ -624,18 +699,40 @@ async function runOpenWikiAgentCore(
   // Stage-only tag: a write failure here classifies from the raw error (a
   // filesystem code becomes filesystem_error), and deriveOwner's finalize
   // exception routes that to openwiki since the run reached our own persistence.
-  const metadataWritten = await inStage("finalize", async () => {
-    await cleanupTemporaryPlanFile(command, cwd, outputMode, options);
-    return persistRunMetadataIfChanged(
-      command,
-      cwd,
-      modelId,
-      outputMode,
-      openWikiSnapshotBefore,
-      "complete",
-      context.language,
-    );
-  });
+  let metadataWritten: boolean;
+
+  try {
+    metadataWritten = await inStage("finalize", async () => {
+      await cleanupTemporaryPlanFile(command, cwd, outputMode, options);
+      if (claimsRuntime) {
+        await claimsRuntime.session.finalize(claimsRuntime.store);
+      }
+      return persistRunMetadataIfChanged(
+        command,
+        cwd,
+        modelId,
+        outputMode,
+        openWikiSnapshotBefore,
+        "complete",
+        context.language,
+      );
+    });
+  } catch (error) {
+    try {
+      await persistRunMetadataIfChanged(
+        command,
+        cwd,
+        modelId,
+        outputMode,
+        openWikiSnapshotBefore,
+        "interrupted",
+        context.language,
+      );
+    } catch {
+      emitDebug(options, "metadata=writeFailed");
+    }
+    throw error;
+  }
 
   if (metadataWritten) {
     emitDebug(options, "metadata=written");
@@ -671,18 +768,22 @@ async function cleanupTemporaryPlanFile(
   );
 }
 
-const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
-
-export type CheckpointTarget = {
-  connString: string;
-  persistent: boolean;
-};
-
+/**
+ * Builds the initial user message for a production run.
+ *
+ * @param command - Current OpenWiki command.
+ * @param cwd - Absolute runtime root.
+ * @param context - Persisted run context.
+ * @param options - User-supplied run options.
+ * @param claimsRuntime - Optional repository Claims runtime.
+ * @returns Follow-up text or a fully populated command prompt.
+ */
 function createRunUserMessage(
   command: OpenWikiCommand,
   cwd: string,
   context: Awaited<ReturnType<typeof createRunContext>>,
   options: OpenWikiRunOptions,
+  claimsRuntime?: ClaimsRuntime,
 ): string {
   if (options.isFollowup === true && options.userMessage?.trim()) {
     return options.userMessage.trim();
@@ -694,8 +795,16 @@ function createRunUserMessage(
     options.userMessage ?? null,
     options.outputMode ?? "local-wiki",
     cwd,
+    claimsRuntime?.context,
   );
 }
+
+const checkpointPath = path.join(openWikiEnvDir, "openwiki.sqlite");
+
+export type CheckpointTarget = {
+  connString: string;
+  persistent: boolean;
+};
 
 /**
  * deepagents' summarization middleware offloads conversation history to

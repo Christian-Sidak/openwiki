@@ -80,16 +80,25 @@ async function readRunWikiGoal(
 }
 
 /**
- * Decides whether an `update` run can be skipped because nothing meaningful changed.
+ * Decides whether an update can skip its model invocation.
  *
- * Working-tree and committed changes that only touch `openwiki/` or paths
- * excluded by `openWikiIgnore` do not count as meaningful, so an ignored path
- * changing on its own never forces a rebuild.
+ * @param cwd - Absolute repository root.
+ * @param openWikiIgnore - Active repository read boundary.
+ * @param claimsRequireAttention - Whether deterministic Claims state needs work.
+ * @returns Skip decision and diagnostic reason.
  */
 export async function getUpdateNoopStatus(
   cwd: string,
   openWikiIgnore = new OpenWikiIgnore([]),
+  claimsRequireAttention = false,
 ): Promise<UpdateNoopStatus> {
+  if (claimsRequireAttention) {
+    return {
+      shouldSkip: false,
+      reason: "grounded claims require reconciliation",
+    };
+  }
+
   const lastUpdate = await readLastUpdate(cwd, "repository");
 
   if (!lastUpdate?.gitHead) {

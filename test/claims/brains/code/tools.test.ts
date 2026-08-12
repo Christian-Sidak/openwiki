@@ -1,7 +1,10 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ClaimSession } from "../../../../src/claims/brains/code/session.ts";
-import { createClaimsTools } from "../../../../src/claims/brains/code/tools.ts";
+import {
+  createClaimsDeleteFileTool,
+  createClaimsTools,
+} from "../../../../src/claims/brains/code/tools.ts";
 import type {
   EvidenceResolver,
   ResolvedEvidence,
@@ -174,5 +177,54 @@ describe("createClaimsTools", () => {
     await expect(
       fetch.invoke({ page: "/openwiki/page.md", unknown: true }),
     ).rejects.toThrow();
+  });
+});
+
+describe("createClaimsDeleteFileTool", () => {
+  test("deletes and records a fetched page with no remaining claims", async () => {
+    const session = createSession();
+    const page = "/openwiki/page.md";
+    session.fetchClaims(page);
+    const deleteFile = vi.fn(() => Promise.resolve({ path: page }));
+    const backend = { delete: deleteFile };
+    const recordDeletion = vi.spyOn(session, "recordDeletion");
+    const tool = createClaimsDeleteFileTool(session, backend);
+
+    const output: unknown = await tool.invoke({ file_path: page });
+
+    expect(output).toBe(JSON.stringify({ deleted: page }));
+    expect(deleteFile).toHaveBeenCalledWith(page);
+    expect(recordDeletion).toHaveBeenCalledWith(page);
+  });
+
+  test("does not record deletion when the backend refuses it", async () => {
+    const session = createSession();
+    const page = "/openwiki/page.md";
+    session.fetchClaims(page);
+    const backend = {
+      delete: vi.fn(() => Promise.resolve({ error: "permission denied" })),
+    };
+    const recordDeletion = vi.spyOn(session, "recordDeletion");
+    const tool = createClaimsDeleteFileTool(session, backend);
+
+    const output: unknown = await tool.invoke({ file_path: page });
+
+    expect(output).toBe(JSON.stringify({ error: "permission denied" }));
+    expect(recordDeletion).not.toHaveBeenCalled();
+  });
+
+  test("requires fetch ordering and a factual generated page", async () => {
+    const session = createSession();
+    const backend = {
+      delete: vi.fn(() => Promise.resolve({ path: "/openwiki/page.md" })),
+    };
+    const tool = createClaimsDeleteFileTool(session, backend);
+
+    await expect(
+      tool.invoke({ file_path: "/openwiki/page.md" }),
+    ).rejects.toThrow("Call fetch_claims");
+    await expect(
+      tool.invoke({ file_path: "/openwiki/index.md" }),
+    ).rejects.toThrow("reserved or structural");
   });
 });

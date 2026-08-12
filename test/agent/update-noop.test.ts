@@ -53,6 +53,17 @@ async function writeLastUpdate(
 }
 
 describe("getUpdateNoopStatus", () => {
+  test("does not skip before Git checks when Claims requires attention", async () => {
+    const repo = await createRepoWithOpenWiki();
+
+    await expect(
+      getUpdateNoopStatus(repo, new OpenWikiIgnore([]), true),
+    ).resolves.toEqual({
+      shouldSkip: false,
+      reason: "grounded claims require reconciliation",
+    });
+  });
+
   test("detects a clean update with unchanged HEAD as a no-op", async () => {
     const repo = await createRepoWithOpenWiki();
     const head = await git(repo, ["rev-parse", "HEAD"]);
