@@ -9,6 +9,10 @@ import type {
   EvidenceResolver,
   ResolvedEvidence,
 } from "../../../../src/claims/core/types.ts";
+import {
+  EvidenceResolutionError,
+  EvidenceResourceError,
+} from "../../../../src/claims/core/errors.ts";
 
 /**
  * Finds one named Claims tool.
@@ -60,6 +64,20 @@ function createSession(): ClaimSession {
     orphanPages: [],
     createClaimId: () => "claim_generated",
   });
+}
+
+/**
+ * Verifies one model-correctable Claims tool result.
+ *
+ * @param output - Unknown structured-tool output.
+ */
+function expectRetryableToolOutput(output: unknown): void {
+  const parsed: unknown = JSON.parse(String(output));
+  expect(parsed).toMatchObject({ retryable: true });
+  if (typeof parsed !== "object" || parsed === null || !("error" in parsed)) {
+    throw new Error("Expected a retryable Claims tool error.");
+  }
+  expect(typeof parsed.error).toBe("string");
 }
 
 describe("createClaimsTools", () => {
@@ -123,7 +141,36 @@ describe("createClaimsTools", () => {
     );
   });
 
-  test("rejects agent-supplied IDs, versions, and unknown properties on add", async () => {
+  test("canonicalizes wiki-relative page paths at the tool boundary", async () => {
+    const tools = createClaimsTools(createSession());
+    const update = getTool(tools, "update_claims");
+    const fetch = getTool(tools, "fetch_claims");
+
+    const updateOutput: unknown = await update.invoke({
+      page: "components/task.md",
+      operations: [
+        {
+          op: "add",
+          statement: "A task is queued.",
+          evidence: [{ resource: "memory://draft/task" }],
+        },
+      ],
+    });
+    const fetchOutput: unknown = await fetch.invoke({
+      page: "openwiki/components/task.md",
+    });
+
+    expect(JSON.parse(String(updateOutput))).toMatchObject({
+      page: "/openwiki/components/task.md",
+      revision: 1,
+    });
+    expect(JSON.parse(String(fetchOutput))).toMatchObject({
+      revision: 1,
+      claims: [{ statement: "A task is queued." }],
+    });
+  });
+
+  test("rejects agent-supplied fields through the tool schema", async () => {
     const update = getTool(createClaimsTools(createSession()), "update_claims");
     const page = "/openwiki/page.md";
 
@@ -150,19 +197,29 @@ describe("createClaimsTools", () => {
     ]) {
       await expect(
         update.invoke({ page, operations: [operation] }),
-      ).rejects.toThrow();
+      ).rejects.toThrow("did not match expected schema");
     }
   });
 
-  test("rejects empty, whitespace, and structurally invalid inputs", async () => {
+  test("rejects structurally invalid inputs through the tool schema", async () => {
     const tools = createClaimsTools(createSession());
     const update = getTool(tools, "update_claims");
     const fetch = getTool(tools, "fetch_claims");
 
     await expect(
       update.invoke({ page: "/openwiki/page.md", operations: [] }),
-    ).rejects.toThrow();
+    ).rejects.toThrow("did not match expected schema");
     await expect(
+      fetch.invoke({ page: "/openwiki/page.md", unknown: true }),
+    ).rejects.toThrow("did not match expected schema");
+  });
+
+  test("returns retryable errors for semantically invalid inputs", async () => {
+    const tools = createClaimsTools(createSession());
+    const update = getTool(tools, "update_claims");
+    const fetch = getTool(tools, "fetch_claims");
+
+    for (const invocation of [
       update.invoke({
         page: "/openwiki/page.md",
         operations: [
@@ -173,10 +230,95 @@ describe("createClaimsTools", () => {
           },
         ],
       }),
-    ).rejects.toThrow();
+      fetch.invoke({ page: "../outside.md" }),
+    ]) {
+      const output: unknown = await invocation;
+      expectRetryableToolOutput(output);
+    }
+  });
+
+  test("returns unresolved evidence as a retryable tool error", async () => {
+    const resolver: EvidenceResolver = {
+      resolve: () => Promise.resolve(null),
+    };
+    const session = new ClaimSession({
+      resolver,
+      persisted: new Map(),
+      issues: [],
+      orphanPages: [],
+    });
+    const update = getTool(createClaimsTools(session), "update_claims");
+
+    const output: unknown = await update.invoke({
+      page: "page.md",
+      operations: [
+        {
+          op: "add",
+          statement: "Missing fact.",
+          evidence: [{ resource: "repo://src/missing.ts#missing" }],
+        },
+      ],
+    });
+
+    expect(JSON.parse(String(output))).toEqual({
+      error: "Evidence does not resolve: repo://src/missing.ts#missing",
+      retryable: true,
+    });
+  });
+
+  test("returns invalid evidence resources as retryable tool errors", async () => {
+    const resolver: EvidenceResolver = {
+      resolve: () =>
+        Promise.reject(new EvidenceResourceError("unsupported resource")),
+    };
+    const session = new ClaimSession({
+      resolver,
+      persisted: new Map(),
+      issues: [],
+      orphanPages: [],
+    });
+    const update = getTool(createClaimsTools(session), "update_claims");
+
+    const output: unknown = await update.invoke({
+      page: "page.md",
+      operations: [
+        {
+          op: "add",
+          statement: "Fact.",
+          evidence: [{ resource: "web://unsupported" }],
+        },
+      ],
+    });
+
+    expectRetryableToolOutput(output);
+    expect(String(output)).toContain("unsupported resource");
+  });
+
+  test("does not hide operational evidence failures", async () => {
+    const resolver: EvidenceResolver = {
+      resolve: () =>
+        Promise.reject(new EvidenceResolutionError("parser unavailable")),
+    };
+    const session = new ClaimSession({
+      resolver,
+      persisted: new Map(),
+      issues: [],
+      orphanPages: [],
+    });
+    const update = getTool(createClaimsTools(session), "update_claims");
+
     await expect(
-      fetch.invoke({ page: "/openwiki/page.md", unknown: true }),
-    ).rejects.toThrow();
+      update.invoke({
+        page: "page.md",
+        operations: [
+          {
+            op: "add",
+            statement: "Fact.",
+            evidence: [{ resource: "repo://src/page.ts#fact" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow("parser unavailable");
   });
 });
 
@@ -192,7 +334,7 @@ describe("createClaimsDeleteFileTool", () => {
 
     const output: unknown = await tool.invoke({ file_path: page });
 
-    expect(output).toBe(JSON.stringify({ deleted: page }));
+    expect(JSON.parse(String(output))).toEqual({ deleted: page });
     expect(deleteFile).toHaveBeenCalledWith(page);
     expect(recordDeletion).toHaveBeenCalledWith(page);
   });
@@ -209,22 +351,20 @@ describe("createClaimsDeleteFileTool", () => {
 
     const output: unknown = await tool.invoke({ file_path: page });
 
-    expect(output).toBe(JSON.stringify({ error: "permission denied" }));
+    expect(JSON.parse(String(output))).toEqual({ error: "permission denied" });
     expect(recordDeletion).not.toHaveBeenCalled();
   });
 
-  test("requires fetch ordering and a factual generated page", async () => {
+  test("returns retryable errors for invalid deletion ordering and paths", async () => {
     const session = createSession();
     const backend = {
       delete: vi.fn(() => Promise.resolve({ path: "/openwiki/page.md" })),
     };
     const tool = createClaimsDeleteFileTool(session, backend);
 
-    await expect(
-      tool.invoke({ file_path: "/openwiki/page.md" }),
-    ).rejects.toThrow("Call fetch_claims");
-    await expect(
-      tool.invoke({ file_path: "/openwiki/index.md" }),
-    ).rejects.toThrow("reserved or structural");
+    for (const filePath of ["page.md", "/openwiki/index.md"]) {
+      const output: unknown = await tool.invoke({ file_path: filePath });
+      expectRetryableToolOutput(output);
+    }
   });
 });

@@ -4,8 +4,8 @@ import {
 } from "@langchain/core/tools";
 import { z } from "zod";
 import type { DeleteResult } from "deepagents";
-import { ClaimSessionError } from "../../core/errors.js";
-import { normalizeWikiPagePath } from "./paths.js";
+import { ClaimSessionError, EvidenceResourceError } from "../../core/errors.js";
+import { normalizeClaimsToolPagePath } from "./paths.js";
 import { ClaimSession } from "./session.js";
 
 /**
@@ -101,11 +101,16 @@ export function createClaimsTools(
     new DynamicStructuredTool({
       name: "update_claims",
       description:
-        "Atomically add, update, or delete material factual claims for one generated wiki page. Evidence uses repo://path or repo://path#symbol resources. OpenWiki resolves versions and IDs; never supply them.",
+        "Atomically add, update, or delete material factual claims for one generated wiki page. Page accepts /openwiki/components/task.md, openwiki/components/task.md, or components/task.md. Evidence uses repo://path or repo://path#symbol resources. OpenWiki resolves versions and IDs; never supply them.",
       schema: {
         type: "object",
         properties: {
-          page: { type: "string", minLength: 1 },
+          page: {
+            type: "string",
+            minLength: 1,
+            description:
+              "Generated Markdown page as an /openwiki path or wiki-relative path, for example /openwiki/components/task.md or components/task.md.",
+          },
           operations: {
             type: "array",
             minItems: 1,
@@ -149,32 +154,39 @@ export function createClaimsTools(
         additionalProperties: false,
       } as const,
       func: async (input) => {
-        const parsed = UpdateClaimsInputSchema.parse(input);
-        return JSON.stringify(
-          await session.updateClaims({
-            page: parsed.page,
+        return runClaimsTool(async () => {
+          const parsed = UpdateClaimsInputSchema.parse(input);
+          return session.updateClaims({
+            page: normalizeClaimsToolPagePath(parsed.page),
             operations: parsed.operations,
-          }),
-          null,
-          2,
-        );
+          });
+        });
       },
     }),
     new DynamicStructuredTool({
       name: "fetch_claims",
       description:
-        "Fetch the complete current working claim set and revision for one generated wiki page. Call this immediately before writing or deleting that page.",
+        "Fetch the complete current working claim set and revision for one generated wiki page. Page accepts /openwiki/components/task.md, openwiki/components/task.md, or components/task.md. Call this immediately before writing or deleting that page.",
       schema: {
         type: "object",
-        properties: { page: { type: "string", minLength: 1 } },
+        properties: {
+          page: {
+            type: "string",
+            minLength: 1,
+            description:
+              "Generated Markdown page as an /openwiki path or wiki-relative path, for example /openwiki/components/task.md or components/task.md.",
+          },
+        },
         required: ["page"],
         additionalProperties: false,
       } as const,
       func: (input) => {
-        const parsed = FetchClaimsInputSchema.parse(input);
-        return Promise.resolve(
-          JSON.stringify(session.fetchClaims(parsed.page), null, 2),
-        );
+        return runClaimsTool(() => {
+          const parsed = FetchClaimsInputSchema.parse(input);
+          return Promise.resolve(
+            session.fetchClaims(normalizeClaimsToolPagePath(parsed.page)),
+          );
+        });
       },
     }),
   ];
@@ -198,30 +210,104 @@ export function createClaimsDeleteFileTool(
   return new DynamicStructuredTool({
     name: "delete_file",
     description:
-      "Delete one generated factual wiki page after deleting all of its claims and calling fetch_claims for the empty set.",
+      "Delete one generated factual wiki page after deleting all of its claims and calling fetch_claims for the empty set. Accepts /openwiki/components/task.md or the wiki-relative components/task.md.",
     schema: {
       type: "object",
-      properties: { file_path: { type: "string", minLength: 1 } },
+      properties: {
+        file_path: {
+          type: "string",
+          minLength: 1,
+          description:
+            "Generated Markdown page as an /openwiki path or wiki-relative path.",
+        },
+      },
       required: ["file_path"],
       additionalProperties: false,
     } as const,
     func: async (input) => {
-      const parsed = DeleteFileInputSchema.parse(input);
-      const page = normalizeWikiPagePath(parsed.file_path);
-      session.assertReadyForDeletion(page);
-      const result = await backend.delete(page);
-      if (result.error) {
-        return JSON.stringify({ error: result.error });
-      }
-      if (!result.path) {
-        throw new ClaimSessionError(
-          `Deletion backend did not confirm the deleted path: ${page}`,
-        );
-      }
-      session.recordDeletion(page);
-      return JSON.stringify({ deleted: page });
+      return runClaimsTool(async () => {
+        const parsed = DeleteFileInputSchema.parse(input);
+        const page = normalizeClaimsToolPagePath(parsed.file_path);
+        session.assertReadyForDeletion(page);
+        const result = await backend.delete(page);
+        if (result.error) {
+          return { error: result.error };
+        }
+        if (!result.path) {
+          throw new Error(
+            `Deletion backend did not confirm the deleted path: ${page}`,
+          );
+        }
+        session.recordDeletion(page);
+        return { deleted: page };
+      });
     },
   });
+}
+
+/**
+ * Executes a model-facing Claims operation with recoverable input failures.
+ *
+ * Operational evidence, filesystem, parser, and unexpected failures are
+ * intentionally rethrown so they cannot be mistaken for agent input errors.
+ *
+ * @param operation - Parsed Claims operation to execute.
+ * @returns JSON tool output for either success or a retryable input failure.
+ */
+async function runClaimsTool(
+  operation: () => Promise<unknown>,
+): Promise<string> {
+  try {
+    return JSON.stringify(await operation(), null, 2);
+  } catch (error) {
+    if (!isRecoverableClaimsToolError(error)) {
+      throw error;
+    }
+    return JSON.stringify(
+      {
+        error: formatRecoverableClaimsToolError(error),
+        retryable: true,
+      },
+      null,
+      2,
+    );
+  }
+}
+
+/**
+ * Identifies deterministic failures the model can correct in another call.
+ *
+ * @param error - Unknown Claims tool failure.
+ * @returns Whether the failure is safe to return to the model.
+ */
+function isRecoverableClaimsToolError(
+  error: unknown,
+): error is ClaimSessionError | EvidenceResourceError | z.ZodError {
+  return (
+    error instanceof ClaimSessionError ||
+    error instanceof EvidenceResourceError ||
+    error instanceof z.ZodError
+  );
+}
+
+/**
+ * Formats one recoverable Claims failure as concise retry guidance.
+ *
+ * @param error - Deterministic model-correctable failure.
+ * @returns Human-readable error detail.
+ */
+function formatRecoverableClaimsToolError(
+  error: ClaimSessionError | EvidenceResourceError | z.ZodError,
+): string {
+  if (!(error instanceof z.ZodError)) {
+    return error.message;
+  }
+  return `Invalid Claims tool input: ${error.issues
+    .map((issue) => {
+      const location = issue.path.length > 0 ? issue.path.join(".") : "input";
+      return `${location}: ${issue.message}`;
+    })
+    .join("; ")}`;
 }
 
 /**

@@ -44,6 +44,22 @@ export function normalizeWikiPagePath(page: string): string {
 }
 
 /**
+ * Canonicalizes a model-supplied page with an optional wiki-root prefix.
+ *
+ * @param page - Agent-supplied canonical, repository-relative, or wiki-relative path.
+ * @returns Canonical `/openwiki/...md` path for internal Claims APIs.
+ */
+export function normalizeClaimsToolPagePath(page: string): string {
+  const slashed = page.trim().replace(/\\/gu, "/");
+  const unrooted = slashed.replace(/^\/+/, "");
+  const rooted =
+    unrooted === "openwiki" || unrooted.startsWith("openwiki/")
+      ? unrooted
+      : `openwiki/${unrooted}`;
+  return normalizeWikiPagePath(rooted);
+}
+
+/**
  * Determines whether a virtual Markdown path owns code-brain claim state.
  *
  * @param page - Canonical or candidate virtual page path.

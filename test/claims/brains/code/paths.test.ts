@@ -3,6 +3,7 @@ import { ClaimSessionError } from "../../../../src/claims/core/errors.ts";
 import {
   CLAIMS_DIRECTORY,
   isGroundedWikiPage,
+  normalizeClaimsToolPagePath,
   normalizeWikiPagePath,
   RESERVED_WIKI_FILES,
   toClaimsSidecarRelativePath,
@@ -20,6 +21,15 @@ describe("code-brain claim paths", () => {
     ],
   ])("canonicalizes %s", (input, expected) => {
     expect(normalizeWikiPagePath(input)).toBe(expected);
+  });
+
+  test.each([
+    ["guides/configuration.md", "/openwiki/guides/configuration.md"],
+    ["/guides/configuration.md", "/openwiki/guides/configuration.md"],
+    ["openwiki/guides/configuration.md", "/openwiki/guides/configuration.md"],
+    ["/openwiki/guides/configuration.md", "/openwiki/guides/configuration.md"],
+  ])("canonicalizes model-facing path %s", (input, expected) => {
+    expect(normalizeClaimsToolPagePath(input)).toBe(expected);
   });
 
   test("maps a page to repository and sidecar paths", () => {
@@ -62,6 +72,15 @@ describe("code-brain claim paths", () => {
   ])("rejects invalid or aliased page path %s", (page) => {
     expect(() => normalizeWikiPagePath(page)).toThrow(ClaimSessionError);
   });
+
+  test.each(["../outside.md", "page.txt", "index.md", ".claims/page.md"])(
+    "rejects invalid model-facing page path %s",
+    (page) => {
+      expect(() => normalizeClaimsToolPagePath(page)).toThrow(
+        ClaimSessionError,
+      );
+    },
+  );
 
   test("exports stable structural names", () => {
     expect(CLAIMS_DIRECTORY).toBe(".claims");
