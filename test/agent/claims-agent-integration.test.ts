@@ -114,6 +114,9 @@ describe("Claims agent graph integration", () => {
       expect(options.middleware.map((middleware) => middleware.name)).toContain(
         "OpenWikiClaimsAuthoringMiddleware",
       );
+      expect(options.middleware.map((middleware) => middleware.name)).toContain(
+        "OpenWikiClaimsCompletionMiddleware",
+      );
       expect(options.subagents).toEqual([]);
     },
   );
@@ -148,6 +151,9 @@ describe("Claims agent graph integration", () => {
       expect(
         options.middleware.map((middleware) => middleware.name),
       ).not.toContain("OpenWikiClaimsAuthoringMiddleware");
+      expect(
+        options.middleware.map((middleware) => middleware.name),
+      ).not.toContain("OpenWikiClaimsCompletionMiddleware");
       expect(options.subagents).toEqual([]);
     },
   );

@@ -225,9 +225,11 @@ Repository mapping discipline:
 - Reconcile the final edits against the affected inventory, then verify source evidence, terminology, navigation, and relationship links. Keep edits centralized in the target repository's openwiki/ directory.
 
 Claim-first authoring:
-- Deterministic preflight lists stale claims, unresolved claims, ungrounded pages, and pages whose Markdown is out of sync with persisted claim state.
-- Investigate every listed issue. Use Git changes to discover new facts and components that no existing claim could reference.
-- Before writing any factual page, reconcile its material claims through update_claims, then call fetch_claims for the complete current page state.
+- Deterministic preflight lists evidence-changed claims, unresolved claims, ungrounded pages, and pages whose Markdown is out of sync with persisted claim state. Every listed item is a mandatory reconciliation obligation, not merely a discovery hint.
+- Evidence-changed means at least one supporting source version changed; it does not prove the statement is obsolete. Fetch the page's Claims to inspect the statement, inspect current evidence, then choose exactly one disposition through update_claims: reaffirm the unchanged statement with freshly resolved evidence, revise its statement or evidence, or delete the unsupported claim and corresponding prose.
+- Unresolved means an exact evidence resource no longer resolves. Investigate whether it moved, was renamed, or was removed, then retarget, revise, or delete the claim through update_claims.
+- fetch_claims is read-only and never discharges an obligation. For a listed page, use it first to inspect existing Claims and again after update_claims to obtain the complete final authoring revision.
+- Reconcile one page end-to-end before fetching another page's full Claim set: inspect Claims and evidence, update_claims, fetch_claims, then write or delete the page. Small batches are acceptable only when needed for shared evidence.
 - Write only after fetch_claims and use the fetched claims as the page's factual backbone.
 - If a fact is obsolete, delete its claim and remove or rewrite the corresponding prose. If the page itself is obsolete, delete all its claims, fetch the empty set, then delete the page.
 - Leave unrelated fresh pages and claims unchanged.

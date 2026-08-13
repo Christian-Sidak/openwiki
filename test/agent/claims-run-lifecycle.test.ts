@@ -373,11 +373,11 @@ describe("Claims production run lifecycle", () => {
     await mkdir(path.join(cwd, "openwiki"));
     await writeFile(path.join(cwd, "openwiki/page.md"), "# Ungrounded\n");
     graphHarness.streamBehavior.mockImplementation(
-      (_options: CapturedGraphOptions, input: CapturedStreamInput) => {
+      async (options: CapturedGraphOptions, input: CapturedStreamInput) => {
         expect(input.messages[0]?.content).toContain(
           "- /openwiki/page.md: ungrounded-page",
         );
-        return Promise.resolve();
+        await groundAndWritePage(options, "/openwiki/page.md");
       },
     );
 

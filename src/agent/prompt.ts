@@ -106,11 +106,12 @@ function formatGroundingContext(context: GroundingContext | undefined): string {
 
   return context.issues
     .map((issue) => {
+      const kind = issue.kind === "stale" ? "evidence-changed" : issue.kind;
       const claim = issue.claimId ? ` claim=${issue.claimId}` : "";
       const resources = issue.resources?.length
         ? ` resources=${issue.resources.join(",")}`
         : "";
-      return `- ${issue.page}: ${issue.kind}${claim}${resources}`;
+      return `- ${issue.page}: ${kind}${claim}${resources}`;
     })
     .join("\n");
 }

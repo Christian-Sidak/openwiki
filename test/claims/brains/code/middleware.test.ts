@@ -1,10 +1,13 @@
-import { ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { MUTATION_PATH_METADATA_KEY } from "../../../../src/agent/docs-only-backend.ts";
-import { createClaimsAuthoringMiddleware } from "../../../../src/claims/brains/code/middleware.ts";
+import {
+  createClaimsAuthoringMiddleware,
+  createClaimsCompletionMiddleware,
+} from "../../../../src/claims/brains/code/middleware.ts";
 import { ClaimSession } from "../../../../src/claims/brains/code/session.ts";
 import { ClaimsStore } from "../../../../src/claims/brains/code/store.ts";
 import type { PageClaims } from "../../../../src/claims/brains/code/types.ts";
@@ -19,6 +22,13 @@ type ClaimsMiddleware = ReturnType<typeof createClaimsAuthoringMiddleware>;
  * Concrete Claims tool wrapper hook.
  */
 type ClaimsToolWrapper = NonNullable<ClaimsMiddleware["wrapToolCall"]>;
+
+/**
+ * Middleware type returned by the Claims completion factory.
+ */
+type ClaimsCompletionMiddleware = ReturnType<
+  typeof createClaimsCompletionMiddleware
+>;
 
 /**
  * Existing claim fixture used to protect deletion.
@@ -52,6 +62,42 @@ function createSession(claims: Claim[] = []): ClaimSession {
             ],
           ]),
     issues: [],
+    orphanPages: [],
+  });
+}
+
+/**
+ * Creates one evidence-changed obligation with current replacement evidence.
+ *
+ * @returns Run-scoped session requiring claim reconciliation and a final write.
+ */
+function createObligatedSession(): ClaimSession {
+  return new ClaimSession({
+    resolver: {
+      resolve: (resource) =>
+        Promise.resolve({
+          evidence: { resource, version: "revision:2" },
+          content: "current evidence",
+        }),
+    },
+    persisted: new Map([
+      [
+        "/openwiki/page.md",
+        {
+          schemaVersion: 1,
+          pageVersion: `sha256:${"a".repeat(64)}`,
+          claims: [EXISTING_CLAIM],
+        },
+      ],
+    ]),
+    issues: [
+      {
+        page: "/openwiki/page.md",
+        kind: "stale",
+        claimId: EXISTING_CLAIM.id,
+        resources: ["memory://fact"],
+      },
+    ],
     orphanPages: [],
   });
 }
@@ -105,6 +151,25 @@ async function invokeMiddleware(
     runtime: {},
   } as unknown as Parameters<ClaimsToolWrapper>[0];
   return wrapper(request, handler);
+}
+
+/**
+ * Invokes a completion middleware hook with one normalized model response.
+ *
+ * @param middleware - Claims completion middleware under test.
+ * @param message - Latest model response.
+ * @returns Middleware state update or undefined.
+ */
+async function invokeCompletionMiddleware(
+  middleware: ClaimsCompletionMiddleware,
+  message: AIMessage,
+): Promise<unknown> {
+  const afterModel = middleware.afterModel;
+  if (!afterModel) {
+    throw new Error("Claims completion middleware is missing afterModel.");
+  }
+  const hook = typeof afterModel === "function" ? afterModel : afterModel.hook;
+  return await Promise.resolve(hook({ messages: [message] }, {}));
 }
 
 describe("createClaimsAuthoringMiddleware", () => {
@@ -193,7 +258,9 @@ describe("createClaimsAuthoringMiddleware", () => {
         "/openwiki/page.md",
         () => Promise.resolve(result),
       );
-      await session.finalize(store);
+      await expect(session.finalize(store)).rejects.toThrow(
+        "Claims reconciliation incomplete",
+      );
       await expect(store.loadPage("/openwiki/page.md")).resolves.toBeNull();
     }
   });
@@ -237,5 +304,87 @@ describe("createClaimsAuthoringMiddleware", () => {
     expect(result.status).toBe("error");
     expect(result.content).toContain("Delete all claims");
     expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe("createClaimsCompletionMiddleware", () => {
+  test("returns premature completion to the model with a compact worklist", async () => {
+    const middleware = createClaimsCompletionMiddleware(
+      createObligatedSession(),
+    );
+
+    const result = await invokeCompletionMiddleware(
+      middleware,
+      new AIMessage("Finished."),
+    );
+
+    expect(result).toMatchObject({ jumpTo: "model" });
+    const messages = (result as { messages: unknown[] }).messages;
+    expect(messages).toHaveLength(1);
+    expect(HumanMessage.isInstance(messages[0])).toBe(true);
+    if (!HumanMessage.isInstance(messages[0])) {
+      throw new Error("Expected a human recovery message.");
+    }
+    expect(messages[0].content).toContain("fetch_claims only inspects");
+    expect(messages[0].content).toContain("evidence-changed");
+    expect(messages[0].content).toContain("claim_existing");
+  });
+
+  test("does not interrupt a model response containing tool calls", async () => {
+    const middleware = createClaimsCompletionMiddleware(
+      createObligatedSession(),
+    );
+    const message = new AIMessage({
+      content: "",
+      tool_calls: [
+        {
+          name: "fetch_claims",
+          args: { page: "/openwiki/page.md" },
+          id: "fetch-1",
+        },
+      ],
+    });
+
+    await expect(
+      invokeCompletionMiddleware(middleware, message),
+    ).resolves.toBeUndefined();
+  });
+
+  test("bounds recovery and permits completion after reconciliation", async () => {
+    const incompleteSession = createObligatedSession();
+    const boundedMiddleware = createClaimsCompletionMiddleware(
+      incompleteSession,
+      { maxRecoveryAttempts: 1 },
+    );
+    const completion = new AIMessage("Finished.");
+
+    await expect(
+      invokeCompletionMiddleware(boundedMiddleware, completion),
+    ).resolves.toMatchObject({ jumpTo: "model" });
+    await expect(
+      invokeCompletionMiddleware(boundedMiddleware, completion),
+    ).resolves.toBeUndefined();
+
+    const completedSession = createObligatedSession();
+    await completedSession.updateClaims({
+      page: "/openwiki/page.md",
+      operations: [
+        {
+          op: "update",
+          id: EXISTING_CLAIM.id,
+          statement: EXISTING_CLAIM.statement,
+          evidence: [{ resource: "memory://fact" }],
+        },
+      ],
+    });
+    completedSession.fetchClaims("/openwiki/page.md");
+    completedSession.recordWrite("/openwiki/page.md");
+
+    await expect(
+      invokeCompletionMiddleware(
+        createClaimsCompletionMiddleware(completedSession),
+        completion,
+      ),
+    ).resolves.toBeUndefined();
   });
 });

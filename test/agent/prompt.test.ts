@@ -311,7 +311,7 @@ describe("createUserPrompt", () => {
 
     expect(prompt).toContain("Grounding issues that must be reconciled:");
     expect(prompt).toContain(
-      "- /openwiki/architecture.md: stale claim=claim_runtime resources=repo://src/agent/index.ts#runOpenWikiAgent",
+      "- /openwiki/architecture.md: evidence-changed claim=claim_runtime resources=repo://src/agent/index.ts#runOpenWikiAgent",
     );
   });
 

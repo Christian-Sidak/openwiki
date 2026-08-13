@@ -109,3 +109,26 @@ export interface GroundingContext {
    */
   issues: GroundingIssue[];
 }
+
+/**
+ * Outstanding deterministic reconciliation work for one generated page.
+ */
+export interface ReconciliationObligation {
+  /**
+   * Generated page that may not yet finish the run.
+   */
+  page: string;
+
+  /**
+   * Original preflight issues whose claims still require mutation.
+   *
+   * @default an empty array when claim mutations are complete but the final
+   * page write is still missing.
+   */
+  issues: GroundingIssue[];
+
+  /**
+   * Whether the page still requires a final fetch followed by a write or deletion.
+   */
+  requiresPageWrite: boolean;
+}

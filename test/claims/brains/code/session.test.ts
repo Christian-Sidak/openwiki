@@ -359,7 +359,7 @@ describe("ClaimSession", () => {
     await expect(store.loadPage(page)).resolves.toEqual(persisted);
   });
 
-  test("persists only the reconciled portion of a legacy wiki", async () => {
+  test("rejects partial legacy reconciliation without persisting sidecars", async () => {
     const reconciledPage = "/openwiki/reconciled.md";
     const remainingPage = "/openwiki/remaining.md";
     await writePage(reconciledPage, "# Reconciled\n");
@@ -377,12 +377,83 @@ describe("ClaimSession", () => {
     session.fetchClaims(reconciledPage);
     session.recordWrite(reconciledPage);
 
-    await session.finalize(store);
-
-    await expect(store.loadPage(reconciledPage)).resolves.toEqual(
-      expect.objectContaining({ claims: [] }),
+    await expect(session.finalize(store)).rejects.toThrow(
+      `Claims reconciliation incomplete for 1 page: ${remainingPage}`,
     );
+    await expect(store.loadPage(reconciledPage)).resolves.toBeNull();
     await expect(store.loadPage(remainingPage)).resolves.toBeNull();
+  });
+
+  test("discharges claim obligations only through mutation and a final write", async () => {
+    const page = "/openwiki/page.md";
+    const secondClaim: Claim = {
+      id: "claim_second",
+      statement: "The second feature exists.",
+      evidence: [{ resource: "memory://second", version: "revision:1" }],
+    };
+    const session = new ClaimSession({
+      resolver: createResolver(
+        new Map([
+          ["memory://feature", resolved("memory://feature", "revision:2")],
+          ["memory://second", resolved("memory://second", "revision:2")],
+        ]),
+      ),
+      persisted: new Map([
+        [page, persistedClaims([EXISTING_CLAIM, secondClaim])],
+      ]),
+      issues: [
+        {
+          page,
+          kind: "stale",
+          claimId: EXISTING_CLAIM.id,
+          resources: ["memory://feature"],
+        },
+        {
+          page,
+          kind: "stale",
+          claimId: secondClaim.id,
+          resources: ["memory://second"],
+        },
+      ],
+      orphanPages: [],
+    });
+
+    session.fetchClaims(page);
+    const initialOutstanding = await session.getOutstandingReconciliation();
+    expect(initialOutstanding).toHaveLength(1);
+    expect(initialOutstanding[0]?.page).toBe(page);
+    expect(initialOutstanding[0]?.issues.map((issue) => issue.claimId)).toEqual(
+      [EXISTING_CLAIM.id, secondClaim.id],
+    );
+
+    await session.updateClaims({
+      page,
+      operations: [
+        {
+          op: "update",
+          id: EXISTING_CLAIM.id,
+          statement: EXISTING_CLAIM.statement,
+          evidence: [{ resource: "memory://feature" }],
+        },
+      ],
+    });
+    expect(
+      (await session.getOutstandingReconciliation())[0]?.issues.map(
+        (issue) => issue.claimId,
+      ),
+    ).toEqual([secondClaim.id]);
+
+    await session.updateClaims({
+      page,
+      operations: [{ op: "delete", id: secondClaim.id }],
+    });
+    expect(await session.getOutstandingReconciliation()).toEqual([
+      { page, issues: [], requiresPageWrite: true },
+    ]);
+
+    session.fetchClaims(page);
+    session.recordWrite(page);
+    await expect(session.getOutstandingReconciliation()).resolves.toEqual([]);
   });
 
   test("records owned translations at the unchanged revision", async () => {

@@ -19,7 +19,10 @@ import {
   type GlobResult,
 } from "deepagents";
 import { createOpenWikiConnectorTools } from "../connectors/tools.js";
-import { createClaimsAuthoringMiddleware } from "../claims/brains/code/middleware.js";
+import {
+  createClaimsAuthoringMiddleware,
+  createClaimsCompletionMiddleware,
+} from "../claims/brains/code/middleware.js";
 import {
   prepareClaimsRuntime,
   type ClaimsRuntime,
@@ -494,7 +497,14 @@ function createOpenWikiAgentGraph(
                 ]
               : []),
             ...(options.claimsRuntime
-              ? [createClaimsAuthoringMiddleware(options.claimsRuntime.session)]
+              ? [
+                  createClaimsAuthoringMiddleware(
+                    options.claimsRuntime.session,
+                  ),
+                  createClaimsCompletionMiddleware(
+                    options.claimsRuntime.session,
+                  ),
+                ]
               : []),
             createOpenWikiIndexMiddleware(
               wikiBackend,

@@ -8,6 +8,7 @@ import type {
   FetchClaimsResult,
   GroundingIssue,
   PageClaims,
+  ReconciliationObligation,
   UpdateClaimsInput,
 } from "./types.js";
 import { CODE_CLAIMS_SCHEMA_VERSION } from "./types.js";
@@ -88,6 +89,11 @@ interface WorkingPageState {
    * Whether deterministic preflight requires agent-owned reconciliation.
    */
   requiresReconciliation: boolean;
+
+  /**
+   * Preflight claim issues not yet targeted by a successful mutation.
+   */
+  pendingIssues: GroundingIssue[];
 }
 
 /**
@@ -161,6 +167,11 @@ export class ClaimSession {
         revision: 0,
         deleted: false,
         requiresReconciliation: issuePages.has(normalizedPage),
+        pendingIssues: options.issues
+          .filter(
+            (issue) => normalizeWikiPagePath(issue.page) === normalizedPage,
+          )
+          .map(cloneGroundingIssue),
       });
     }
     for (const page of issuePages) {
@@ -171,6 +182,9 @@ export class ClaimSession {
           revision: 0,
           deleted: false,
           requiresReconciliation: true,
+          pendingIssues: options.issues
+            .filter((issue) => normalizeWikiPagePath(issue.page) === page)
+            .map(cloneGroundingIssue),
         });
       }
     }
@@ -218,6 +232,16 @@ export class ClaimSession {
       current.fetchedRevision = undefined;
       current.writtenRevision = undefined;
       current.deleted = false;
+      current.requiresReconciliation = true;
+      const targetedClaimIds = new Set(
+        input.operations.flatMap((operation) =>
+          operation.op === "add" ? [] : [operation.id],
+        ),
+      );
+      current.pendingIssues = current.pendingIssues.filter(
+        (issue) =>
+          issue.claimId === undefined || !targetedClaimIds.has(issue.claimId),
+      );
       return {
         page,
         revision: current.revision,
@@ -304,6 +328,7 @@ export class ClaimSession {
     const state = this.getOrCreatePage(page);
     state.writtenRevision = state.revision;
     state.deleted = false;
+    this.recordPageReconciliation(state);
   }
 
   /**
@@ -317,6 +342,7 @@ export class ClaimSession {
     const state = this.getOrCreatePage(page);
     state.writtenRevision = state.revision;
     state.deleted = true;
+    this.recordPageReconciliation(state);
   }
 
   /**
@@ -344,14 +370,53 @@ export class ClaimSession {
   }
 
   /**
+   * Returns every page that still prevents deterministic run completion.
+   *
+   * Fetching Claims does not discharge an obligation. Claim-level issues leave
+   * the ledger only after a successful update or deletion, and the page leaves
+   * only after a successful write or deletion at the final fetched revision.
+   *
+   * @returns Stable-order cloned reconciliation obligations.
+   */
+  async getOutstandingReconciliation(): Promise<ReconciliationObligation[]> {
+    const outstanding: ReconciliationObligation[] = [];
+
+    for (const [page, state] of this.pages) {
+      await state.pendingMutation;
+      if (!state.requiresReconciliation) {
+        continue;
+      }
+      outstanding.push({
+        page,
+        issues: state.pendingIssues.map(cloneGroundingIssue),
+        requiresPageWrite:
+          state.writtenRevision !== state.revision ||
+          state.pendingIssues.length > 0,
+      });
+    }
+
+    return outstanding.sort((left, right) =>
+      left.page.localeCompare(right.page),
+    );
+  }
+
+  /**
    * Persists pages synchronized during this successful run.
    *
-   * Unaddressed pages keep their prior state. Every eligible page is rechecked
-   * against current evidence and finalized Markdown before sidecars are mutated.
+   * Unaddressed fresh pages keep their prior state, while any outstanding
+   * reconciliation page blocks the entire persistence pass. Every eligible page
+   * is rechecked against current evidence and finalized Markdown before sidecars
+   * are mutated.
    *
    * @param store - OpenWiki-owned claim persistence.
    */
   async finalize(store: ClaimsStore): Promise<void> {
+    const outstanding = await this.getOutstandingReconciliation();
+    if (outstanding.length > 0) {
+      throw new ClaimSessionError(
+        `Claims reconciliation incomplete for ${outstanding.length} page${outstanding.length === 1 ? "" : "s"}: ${outstanding.map((item) => item.page).join(", ")}`,
+      );
+    }
     const ready: FinalizablePage[] = [];
 
     for (const [page, state] of this.pages) {
@@ -433,8 +498,36 @@ export class ClaimSession {
       revision: 0,
       deleted: false,
       requiresReconciliation: true,
+      pendingIssues: [],
     };
     this.pages.set(page, created);
     return created;
   }
+
+  /**
+   * Clears page-level issues and closes a fully reconciled page obligation.
+   *
+   * @param state - Page state after a successful final write or deletion.
+   */
+  private recordPageReconciliation(state: WorkingPageState): void {
+    state.pendingIssues = state.pendingIssues.filter(
+      (issue) => issue.claimId !== undefined,
+    );
+    if (state.pendingIssues.length === 0) {
+      state.requiresReconciliation = false;
+    }
+  }
+}
+
+/**
+ * Clones one grounding issue across session ownership boundaries.
+ *
+ * @param issue - Grounding issue to clone.
+ * @returns Structurally independent issue.
+ */
+function cloneGroundingIssue(issue: GroundingIssue): GroundingIssue {
+  return {
+    ...issue,
+    resources: issue.resources ? [...issue.resources] : undefined,
+  };
 }
