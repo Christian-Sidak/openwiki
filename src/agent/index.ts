@@ -127,6 +127,7 @@ import {
   resolveProviderRetryAttempts,
   type OpenWikiProvider,
 } from "../config/constants.js";
+import { resolveReasoningConfig } from "../config/reasoning.js";
 import {
   resolveExternalCliCredential,
   validateExternalCliCredential,
@@ -1082,6 +1083,19 @@ export function createModel(
   providerRetryAttempts: number,
 ) {
   const retryOptions = { maxRetries: providerRetryAttempts };
+  const reasoningConfig = resolveReasoningConfig(provider, modelId);
+
+  // GPT-5.6 supports `max` before some OpenAI SDK type unions include it. The
+  // documented Responses payload is still `reasoning: { effort }`, so keep the
+  // compatibility cast narrowly at the ChatOpenAI constructor boundary.
+  const responsesReasoningOptions =
+    reasoningConfig?.transport === "responses-reasoning"
+      ? { reasoning: { effort: reasoningConfig.effort as never } }
+      : {};
+  const chatCompletionsReasoningOptions =
+    reasoningConfig?.transport === "chat-completions-reasoning-effort"
+      ? { modelKwargs: { reasoning_effort: reasoningConfig.effort } }
+      : {};
 
   if (provider === "gemini") {
     return new ChatGoogle({
@@ -1149,6 +1163,7 @@ export function createModel(
       // every generation — including the non-streaming `.invoke()` calls
       // DeepAgents' agent node issues internally.
       streaming: true,
+      ...responsesReasoningOptions,
       ...retryOptions,
       configuration: {
         baseURL: CODEX_RESPONSES_BASE_URL,
@@ -1196,6 +1211,8 @@ export function createModel(
       : undefined,
     model: modelId,
     useResponsesApi: providerUsesResponsesApi(provider, modelId),
+    ...responsesReasoningOptions,
+    ...chatCompletionsReasoningOptions,
     // Some gateways only serve the streaming transport; see
     // resolveOpenAiCompatibleStreaming for the full rationale. Spread rather
     // than assigning a boolean: `streaming: false` is not the same as omitting
