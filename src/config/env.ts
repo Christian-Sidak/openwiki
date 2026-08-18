@@ -58,11 +58,17 @@ import {
   OPENWIKI_X_CLIENT_SECRET_ENV_KEY,
   OPENWIKI_X_REFRESH_TOKEN_ENV_KEY,
   OPENWIKI_TAVILY_API_KEY_ENV_KEY,
+  OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
   OPENWIKI_REASONING_EFFORT_ENV_KEY,
   OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY,
+  OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY,
+  resolveConfiguredProvider,
+  resolveMaxOutputTokens,
   resolveProviderRetryAttempts,
+  resolveStreamIdleTimeout,
+  type OpenWikiProvider,
 } from "./constants.js";
 import { isReasoningEffort } from "./reasoning.js";
 import { isFileNotFoundError } from "../platform/fs-errors.js";
@@ -129,6 +135,8 @@ export const MANAGED_ENV_KEYS = [
   BEDROCK_AWS_REGION_ENV_KEY,
   OPENWIKI_PROVIDER_ENV_KEY,
   OPENWIKI_MODEL_ID_ENV_KEY,
+  OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY,
+  OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY,
   OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY,
   OPENWIKI_REASONING_EFFORT_ENV_KEY,
   OPENWIKI_NOTION_TOKEN_ENV_KEY,
@@ -280,9 +288,13 @@ export async function getCredentialDiagnostics(): Promise<
   CredentialDiagnostic[]
 > {
   const fileEnv = await readOpenWikiEnv();
+  const provider = resolveConfiguredProvider({
+    ...fileEnv,
+    ...process.env,
+  });
 
   return CREDENTIAL_DIAGNOSTIC_ENV_KEYS.map((key) =>
-    createCredentialDiagnostic(key, fileEnv),
+    createCredentialDiagnostic(key, fileEnv, provider),
   );
 }
 
@@ -363,6 +375,7 @@ async function saveOpenWikiEnvLocked(updates: EnvMap): Promise<void> {
 function createCredentialDiagnostic(
   key: CredentialDiagnostic["key"],
   fileEnv: EnvMap,
+  provider: OpenWikiProvider,
 ): CredentialDiagnostic {
   const processValue = process.env[key];
   const fileValue = fileEnv[key];
@@ -391,15 +404,19 @@ function createCredentialDiagnostic(
         ? getModelWarnings(value)
         : key === OPENWIKI_PROVIDER_ENV_KEY
           ? getProviderWarnings(value)
-          : key === OPENAI_COMPATIBLE_USE_RESPONSES_API_ENV_KEY ||
-              key === OPENAI_COMPATIBLE_STREAMING_ENV_KEY
-            ? getBooleanWarnings(value)
-            : key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY
-              ? getRetryAttemptsWarnings(value)
-              : key === OPENWIKI_REASONING_EFFORT_ENV_KEY
-                ? getReasoningEffortWarnings(value)
-                : (getBaseUrlDiagnosticWarnings(key, value) ??
-                  getCredentialWarnings(value)),
+          : key === OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY
+            ? getMaxOutputTokensWarnings(value)
+            : key === OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY
+              ? getStreamIdleTimeoutWarnings(value, provider)
+              : key === OPENAI_COMPATIBLE_USE_RESPONSES_API_ENV_KEY ||
+                  key === OPENAI_COMPATIBLE_STREAMING_ENV_KEY
+                ? getBooleanWarnings(value)
+                : key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY
+                  ? getRetryAttemptsWarnings(value)
+                  : key === OPENWIKI_REASONING_EFFORT_ENV_KEY
+                    ? getReasoningEffortWarnings(value)
+                    : (getBaseUrlDiagnosticWarnings(key, value) ??
+                      getCredentialWarnings(value)),
   };
 }
 
@@ -457,6 +474,8 @@ function isNonSecretDiagnosticKey(key: string): boolean {
   return (
     key === OPENWIKI_MODEL_ID_ENV_KEY ||
     key === OPENWIKI_PROVIDER_ENV_KEY ||
+    key === OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY ||
+    key === OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY ||
     key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY ||
     key === OPENWIKI_REASONING_EFFORT_ENV_KEY ||
     key === OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY ||
@@ -530,6 +549,39 @@ function getRetryAttemptsWarnings(value: string): string[] {
     return [];
   } catch {
     return ["invalid retry attempts"];
+  }
+}
+
+function getMaxOutputTokensWarnings(value: string): string[] {
+  try {
+    resolveMaxOutputTokens({
+      [OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY]: value,
+    });
+
+    return [];
+  } catch {
+    return ["invalid output token limit"];
+  }
+}
+
+function getStreamIdleTimeoutWarnings(
+  value: string,
+  provider: OpenWikiProvider,
+): string[] {
+  if (provider !== "bedrock") {
+    return [];
+  }
+
+  try {
+    const streamIdleTimeout = resolveStreamIdleTimeout({
+      [OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY]: value,
+    });
+
+    return streamIdleTimeout === 0
+      ? ["stream watchdog disabled; stalled streams may hang indefinitely"]
+      : [];
+  } catch {
+    return ["invalid stream idle timeout"];
   }
 }
 
