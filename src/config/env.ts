@@ -66,6 +66,7 @@ import {
   OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY,
   resolveConfiguredProvider,
   resolveMaxOutputTokens,
+  resolveOpenRouterMaxTokens,
   resolveProviderRetryAttempts,
   resolveStreamIdleTimeout,
   type OpenWikiProvider,
@@ -406,17 +407,19 @@ function createCredentialDiagnostic(
           ? getProviderWarnings(value)
           : key === OPENWIKI_MAX_OUTPUT_TOKENS_ENV_KEY
             ? getMaxOutputTokensWarnings(value)
-            : key === OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY
-              ? getStreamIdleTimeoutWarnings(value, provider)
-              : key === OPENAI_COMPATIBLE_USE_RESPONSES_API_ENV_KEY ||
-                  key === OPENAI_COMPATIBLE_STREAMING_ENV_KEY
-                ? getBooleanWarnings(value)
-                : key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY
-                  ? getRetryAttemptsWarnings(value)
-                  : key === OPENWIKI_REASONING_EFFORT_ENV_KEY
-                    ? getReasoningEffortWarnings(value)
-                    : (getBaseUrlDiagnosticWarnings(key, value) ??
-                      getCredentialWarnings(value)),
+            : key === OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY
+              ? getOpenRouterMaxTokensWarnings(value)
+              : key === OPENWIKI_STREAM_IDLE_TIMEOUT_ENV_KEY
+                ? getStreamIdleTimeoutWarnings(value, provider)
+                : key === OPENAI_COMPATIBLE_USE_RESPONSES_API_ENV_KEY ||
+                    key === OPENAI_COMPATIBLE_STREAMING_ENV_KEY
+                  ? getBooleanWarnings(value)
+                  : key === OPENWIKI_PROVIDER_RETRY_ATTEMPTS_ENV_KEY
+                    ? getRetryAttemptsWarnings(value)
+                    : key === OPENWIKI_REASONING_EFFORT_ENV_KEY
+                      ? getReasoningEffortWarnings(value)
+                      : (getBaseUrlDiagnosticWarnings(key, value) ??
+                        getCredentialWarnings(value)),
   };
 }
 
@@ -561,6 +564,18 @@ function getMaxOutputTokensWarnings(value: string): string[] {
     return [];
   } catch {
     return ["invalid output token limit"];
+  }
+}
+
+function getOpenRouterMaxTokensWarnings(value: string): string[] {
+  try {
+    resolveOpenRouterMaxTokens({
+      [OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY]: value,
+    });
+
+    return [];
+  } catch {
+    return ["invalid max output tokens"];
   }
 }
 

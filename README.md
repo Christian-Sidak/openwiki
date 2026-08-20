@@ -348,13 +348,21 @@ OPENROUTER_API_KEY=your-key
 OPENWIKI_OPENROUTER_PROVIDER_ONLY=Novita
 ```
 
-**OpenRouter output-token cap.** By default no `max_tokens` is sent, so OpenRouter's credit pre-check budgets for the model's full advertised output ceiling — on a low credit balance every request can fail with a 402 error. Cap the per-request output explicitly with:
+**Output-token limit.** OpenWiki uses a 16,384-token per-request default for modern Claude 4/5 models because older LangChain model metadata otherwise limits newer Claude aliases to 4,096 tokens. Set a provider-neutral limit for the currently selected model with:
+
+```bash
+OPENWIKI_MAX_OUTPUT_TOKENS=16384
+```
+
+OpenWiki maps this setting to the selected provider's request shape. Custom models otherwise retain their provider or SDK default, since their supported output windows are not known to OpenWiki.
+
+**OpenRouter output-token cap.** By default no `max_tokens` is sent, so OpenRouter's credit pre-check budgets for the model's full advertised output ceiling — on a low credit balance every request can fail with a 402 error. Existing installations can keep an OpenRouter-specific cap with:
 
 ```bash
 OPENWIKI_OPENROUTER_MAX_TOKENS=8192
 ```
 
-A cap trades those hard 402 failures for possible truncation when a long wiki generation genuinely needs more output tokens, so prefer the largest value your balance allows.
+The OpenRouter-specific setting takes precedence over `OPENWIKI_MAX_OUTPUT_TOKENS` for OpenRouter runs. A cap trades those hard 402 failures for possible truncation when a long wiki generation genuinely needs more output tokens, so prefer the largest value your balance allows.
 
 **Retry attempts.** OpenWiki uses LangChain's retry handling for transient provider errors. Override the retry count (default 3) with `OPENWIKI_PROVIDER_RETRY_ATTEMPTS=3` (a positive integer).
 
