@@ -66,8 +66,6 @@ OpenWiki can run inside an existing coding agent instead of launching its own mo
 
 <div align="center">
   <img alt="Codex initializes an OpenWiki for a repository." src="./static/openwiki-codex.gif" width="880">
-  <br/>
-  <sub>Codex initializes a repository wiki with OpenWiki (0:49)</sub>
 </div>
 
 Install the integration for your coding agent (choose one):
