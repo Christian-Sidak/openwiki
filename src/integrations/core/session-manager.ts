@@ -406,9 +406,11 @@ export class HostSessionManager {
         prepared: session.preparedWiki,
         at: session.startedAt,
         producerActor: this.producerActor,
+        claimSources:
+          session.claimsRuntime.session.getEvidenceResourcesByPage(),
       });
       await reconcileDeletedClaimPages(session);
-      await session.claimsRuntime.finalize();
+      await session.claimsRuntime.finalize(session.startedAt);
       await persistRunMetadataIfChanged(
         session.mode,
         session.root,

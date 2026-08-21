@@ -2,6 +2,7 @@ import { ToolMessage } from "@langchain/core/messages";
 import type { BackendProtocolV2 } from "deepagents";
 import { createMiddleware } from "langchain";
 import path from "node:path";
+import type { ClaimEvidenceResources } from "../okf/claim-sources.js";
 import {
   validatePersistedFile,
   type FrontmatterIssue,
@@ -35,11 +36,15 @@ const WRITE_TOOLS = new Set(["write_file", "edit_file"]);
  * the current time so callers that do not stamp (or tests exercising only the
  * index passes) need not supply one.
  *
+ * `claimSources`, when supplied by a repository Claims runtime, is read only
+ * during finalization so it reflects every mutation accepted during the run.
+ *
  * @param backend - Filesystem abstraction rooted to the active wiki target.
  * @param outputMode - Repository or local-wiki output layout.
  * @param labels - Localized labels used by generated indexes.
  * @param conceptType - Fallback OKF concept type used during migration.
  * @param now - Shared ISO 8601 timestamp for generated provenance events.
+ * @param claimSources - Optional deferred Claims evidence projection.
  * @returns LangChain middleware for the deterministic wiki lifecycle.
  */
 export function createOpenWikiIndexMiddleware(
@@ -48,6 +53,7 @@ export function createOpenWikiIndexMiddleware(
   labels: IndexLabels = ENGLISH_INDEX_LABELS,
   conceptType: string = ENGLISH_CONCEPT_TYPE,
   now: string = new Date().toISOString(),
+  claimSources?: () => ClaimEvidenceResources,
 ) {
   let preparedWiki: PreparedWikiState | undefined;
 
@@ -103,6 +109,7 @@ export function createOpenWikiIndexMiddleware(
         conceptType,
         prepared: preparedWiki,
         at: now,
+        claimSources: claimSources?.(),
         runOperation: (operation, task) =>
           inStage("finalize", task, {
             errorClass: "okf_error",

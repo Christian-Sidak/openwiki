@@ -5,6 +5,10 @@ import {
   snapshotGeneratedProvenance,
   type GeneratedProvenanceSnapshot,
 } from "../okf/generated-provenance.js";
+import {
+  synchronizeClaimSources,
+  type ClaimEvidenceResources,
+} from "../okf/claim-sources.js";
 import { migrateWikiToOkf, synchronizeWikiIndexes } from "../okf/index-sync.js";
 import {
   ENGLISH_CONCEPT_TYPE,
@@ -24,7 +28,11 @@ export type WikiPreparationOperation = "migrate" | "provenance_snapshot";
  * Stable identifiers for deterministic wiki finalization operations.
  */
 export type WikiFinalizerOperation =
-  "mermaid" | "index_sync" | "link_validation" | "generated_provenance";
+  | "mermaid"
+  | "index_sync"
+  | "link_validation"
+  | "claims_sources"
+  | "generated_provenance";
 
 /**
  * Deferred work for one deterministic wiki lifecycle operation.
@@ -148,6 +156,14 @@ export interface WikiFinalizerOptions extends WikiLifecycleOptions {
   producerActor?: string;
 
   /**
+   * Current page-owned Claims evidence projected into OKF sources before
+   * generated provenance is reconciled.
+   *
+   * @default undefined - no Claims source projection is required.
+   */
+  claimSources?: ClaimEvidenceResources;
+
+  /**
    * Optional telemetry wrapper for individual finalization operations.
    *
    * @default direct task execution
@@ -191,6 +207,7 @@ export async function finalizeWikiArtifacts({
   prepared,
   at,
   producerActor = OPENWIKI_PRODUCER_ACTOR,
+  claimSources,
   runOperation = runWikiOperation,
 }: WikiFinalizerOptions): Promise<void> {
   if (producerActor.trim().length === 0) {
@@ -203,6 +220,11 @@ export async function finalizeWikiArtifacts({
   await runOperation("link_validation", () =>
     validateWikiInternalLinks(backend, outputMode),
   );
+  if (claimSources) {
+    await runOperation("claims_sources", () =>
+      synchronizeClaimSources(backend, outputMode, claimSources),
+    );
+  }
   await runOperation("generated_provenance", () =>
     finalizeGeneratedProvenance(
       backend,

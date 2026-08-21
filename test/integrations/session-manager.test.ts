@@ -15,6 +15,8 @@ import { HostIntegrationError } from "../../src/integrations/core/errors.ts";
 import { HostSessionManager } from "../../src/integrations/core/session-manager.ts";
 import { getHostTarget } from "../../src/integrations/install/registry.ts";
 import { ClaimsStore } from "../../src/claims/brains/code/store.ts";
+import { parseFrontmatterFields } from "../../src/okf/frontmatter.ts";
+import { OPENWIKI_PRODUCER_ACTOR } from "../../src/version.ts";
 
 const RUN_TIMESTAMP = "2026-08-20T08:15:00.000Z";
 const temporaryRoots: string[] = [];
@@ -266,6 +268,19 @@ describe("HostSessionManager lifecycle", () => {
     await expect(store.loadPage(page)).resolves.toMatchObject({
       claims: [{ id: claimId, statement: "The repository has a README." }],
     });
+    const initializedFields = parseFrontmatterFields(
+      await readFile(path.join(wikiRoot, "page.md"), "utf8"),
+    );
+    expect(initializedFields?.generated).toEqual({
+      by: "codex",
+      at: RUN_TIMESTAMP,
+    });
+    expect(initializedFields?.sources).toEqual([
+      expect.objectContaining({ resource: "repo://README.md" }),
+    ]);
+    expect(initializedFields?.verified).toEqual([
+      { by: OPENWIKI_PRODUCER_ACTOR, at: RUN_TIMESTAMP },
+    ]);
 
     await writeFile(sourcePath, "# Repository\n\nUpdated.\n", "utf8");
     const updating = await manager.begin({ root, mode: "update" });
