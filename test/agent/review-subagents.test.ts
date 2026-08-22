@@ -75,6 +75,21 @@ describe("repository review subagents", () => {
     }
 
     expect(reviewers[0]?.systemPrompt).toContain("/openwiki/_plan.md");
+    expect(reviewers[0]?.systemPrompt).toContain(
+      "durable information architecture",
+    );
+    expect(reviewers[0]?.systemPrompt).toContain(
+      "root must not be a dumping ground",
+    );
+    expect(reviewers[0]?.systemPrompt).toContain(
+      "Reject generic umbrella directories",
+    );
+    expect(reviewers[0]?.systemPrompt).toContain(
+      "every planned quickstart domain containing multiple pages corresponds to the physical directory",
+    );
+    expect(reviewers[0]?.systemPrompt).toContain(
+      "name the exact planned paths or domain ownership that must change",
+    );
     expect(reviewers[0]?.systemPrompt).not.toContain("_skeleton.md");
   });
 

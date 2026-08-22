@@ -99,6 +99,8 @@ Mode-specific behavior:
 
 Initialize a source-grounded code wiki under /openwiki in the root of the repository that helps humans and coding agents understand and safely change this repository.{OUTPUT_LANGUAGE_INSTRUCTIONS}
 
+This is a brand-new generation. Any prior generated wiki pages, Claims sidecars, indexes, and run metadata have been removed before this run. Do not assume or attempt to recover prior generated content. The user-authored /openwiki/INSTRUCTIONS.md brief is preserved when present.
+
 Hard constraints:
 - Filesystem / is the repository root. Read repository source as evidence, but write generated files only under /openwiki. Do not modify source code, /AGENTS.md, /CLAUDE.md, or /openwiki/INSTRUCTIONS.md.
 - Read /openwiki/INSTRUCTIONS.md when present; it is the user-authored scope and priority brief, not generated documentation.
@@ -115,29 +117,40 @@ ${CLAIMS_SUBSTANCE_GUIDANCE}
 
 Init workflow:
 1. Inventory the repository's manifest-backed components, entrypoints, public surfaces, major domains, data ownership, cross-system workflows, operations, and representative tests.
-2. Create /openwiki/_plan.md. Map every substantial component and workflow to its canonical page, primary source paths and symbols, focused tests, and disposition. Do not copy the directory tree into the wiki.
+2. Create /openwiki/_plan.md. Begin with an Information architecture section that shows the proposed wiki tree and explains its stable, repository-specific domain taxonomy. Then map every substantial component and workflow to its canonical page, primary source paths and symbols, focused tests, and disposition. Organize around runtime domains, owned subsystems, and cross-system workflows—not the source directory tree.
+  a) Keep the wiki root focused on /openwiki/quickstart.md and a small set of genuinely repository-wide concepts. A flat root containing pages from several coherent domains is not acceptable when those pages can form meaningful sections.
+  b) Put related pages under a clearly named domain directory when they share an owning subsystem, lifecycle, data boundary, operational surface, or user task. A directory containing only one substantive page usually indicates an artificial boundary; merge it into a suitable parent or plan the other substantive pages the domain actually needs.
+  c) Make the proposed quickstart domain map correspond to the physical hierarchy. A named domain containing multiple pages should normally be a directory with those pages; do not present a semantic grouping in quickstart while scattering its members across the root or unrelated directories.
+  d) Do not use generic umbrella directories such as architecture/, core/, or platform/ as catch-alls for independently owned subsystems. An architecture section may contain system-level overviews and cross-domain flows, but Claims, connectors, integrations, telemetry, providers, and other independently owned areas belong in their own coherent domain or a parent that truthfully describes their relationship.
+  e) Do not force hierarchy onto a genuinely small wiki, mirror source folders, create generic catch-all sections, or add thin directory landing pages solely to make the tree deeper. The taxonomy must make the shortest path from an engineering question to its canonical documentation obvious.
+  f) Treat every path in the approved tree as the page's final path. Do not draft pages at the wiki root for later reorganization: Claims are page-owned, so establish each page's canonical domain and destination before Claims or prose authoring begins.
 3. Invoke the \`skeleton-critic\` subagent with /openwiki/_plan.md, the documentation scope, and any explicit exclusions. The critic is read-only and reviews repository-wide breadth; the top-level agent owns every plan edit.
   a) Create one TODO for every returned RQ item and revise the plan to resolve each evidence-backed gap.
   b) Invoke \`skeleton-critic\` exactly once more with the complete prior-request ledger and how each item was addressed. Resolve any remaining item directly without a third critic call.
+  c) Do not begin substantive page research, resolve Claims, or write wiki prose until every taxonomy request is resolved in /openwiki/_plan.md and the exact final paths are frozen.
+  d) Before the final paths are frozen, the top-level agent owns inventory and plan revision. Do not invoke general-purpose subagents for standalone research or evidence briefs; the read-only \`skeleton-critic\` is the only review delegation in this phase.
 4. For each planned factual page:
-  a) Research its source and tests.
+  a) Research its source and tests. After the taxonomy is frozen, you may delegate end-to-end authoring for coherent domains to at most nine general-purpose subagents total. Give each invocation one disjoint set of exact planned paths and require it to research, establish Claims, and write those pages in the same invocation.
   b) Establish every material repository-supported factual proposition through resolve_claims. Cite the narrowest sufficient source span as repo://path#L10-L24; use repo://path only when the whole file is the evidence. Claims currently support repository evidence only. Do not invent repository evidence for connector-derived facts. Leave LangSmith-only facts unclaimed.
   c) Write the page as complete explanatory prose grounded in the researched evidence. The established propositions are the material facts to state accurately and keep grounded; they are not a content budget or a ceiling on what to write. Beyond recording them, fully explain how the system works: responsibilities, owning entrypoints and symbols, mechanisms and control flow, important relationships and invariants, lifecycle and ordering, extension points, focused tests, worked examples, and primary evidence where they aid understanding. A passing mention, directory list, source-map row, or concise overview is not substantive coverage.
   d) Ensure EVERY substantial service, API endpoint, and major workflow is documented. An agent or human should be able to use the wiki to fully understand the codebase and its systems and workflows without needing to read a single line of code outside of the wiki; if the wiki alone cannot convey that complete understanding, the documentation is insufficient.
-5. Perform one top-level unknown-unknown pass over uncovered high-ranked clusters, one-hop dependencies, and cross-system workflows. Expand the plan only for real gaps, then author every added page with the same evidence discipline.
-6. Reconcile the wiki tree against the reviewed plan and inventory, then write /openwiki/quickstart.md using its own complete Claims set.
+  e) Never split one domain into a standalone general-purpose research task followed by a separate authoring task, and never ask a second general-purpose subagent to repeat research for a domain already assigned. The authoring invocation performs the domain's evidence pass once and carries that evidence directly into Claims and prose.
+5. Perform one top-level unknown-unknown pass over uncovered high-ranked clusters, one-hop dependencies, and cross-system workflows. Expand the plan only for real gaps. Before authoring an added page, place its exact final path into the existing taxonomy and verify that it does not create root-level sprawl, an artificial single-page directory, or a generic catch-all; then author it with the same evidence discipline. Never introduce an ad-hoc page path that is absent from the plan.
+6. Reconcile the physical wiki tree against the reviewed domain taxonomy and inventory. Relocate root-level orphans, collapse unjustified single-page directories, split generic umbrella sections that mix independently owned subsystems, and ensure every multi-page domain in quickstart maps to its physical directory; then write /openwiki/quickstart.md using its own complete Claims set.
 7. Verify the completed wiki with the read-only \`wiki-question-finder\` and \`wiki-answer-verifier\` subagents:
   a) Invoke \`wiki-question-finder\`, then create one TODO for every returned question ID.
   b) Before each verification wave, group related questions into batches of 2–3 and launch all batches for that wave together. On the initial wave, provide each question's exact ID, text, and acceptance criteria.
   c) For every PARTIAL or FAIL, inspect the reported gap's current source and tests yourself. Maintain affected propositions with resolve_claims, then repair the canonical page. The subagents never mutate Claims or Markdown.
   d) Finish all repairs in the wave before retrying. Re-invoke \`wiki-answer-verifier\` only for remaining PARTIAL or FAIL IDs, providing the unchanged ID and question, prior missing-items list, and pages changed. Mark a TODO complete only after PASS.
-8. Perform a final reconciliation against the reviewed plan, QA TODOs, and Claims-backed page set. Keep quickstart links accurate after repairs.
+8. Perform a final reconciliation against the reviewed plan, domain taxonomy, QA TODOs, and Claims-backed page set. Keep the quickstart's semantic map aligned with the physical directory hierarchy after repairs.
 - Optimize for path compression: shorten the route from an engineering intent to the owning files and symbols, related systems, focused tests, and narrow validation command.
 - Substantial components and major workflows must be documented during init. Defer only when explicitly outside scope, unavailable to inspect safely, or evidence-blocked. Never defer an area merely because of time, token, page-count, or navigation convenience. Record valid deferrals in a concise Backlog section in quickstart with a source anchor and reason.
 - Do not document every file or target a page count. Wiki depth should reflect meaningful repository complexity.
 
 Documentation contract:
 - /openwiki/quickstart.md is the entrypoint. Include a high-level map, links to every major concept, and a compact task-routing table from change area or intent to relevant page, source entrypoints/symbols, focused tests, and minimal validation.
+- Treat information architecture as part of documentation correctness. The directory hierarchy must expose the repository's meaningful domains and relationships instead of presenting readers with an undifferentiated collection of root-level Markdown files.
+- Derive quickstart's domain map from the final physical tree. Do not invent semantic groups in quickstart that the directory hierarchy does not actually represent.
 - Each substantive page should explain what the system does, why it exists, ownership and entrypoints, important symbols, dependencies/data flow, invariants and lifecycle ordering, extension points, focused tests, validation, schemas, and scope boundaries when applicable.
 - For public or cross-package extension points, capture the complete evidence-backed change surface concisely: implementation, exports, registration or generated surfaces, consumer import path, and the narrowest consumer-facing test.
 - Document recurring change recipes only when source evidence establishes a real extension seam. Distinguish focused checks from conditional expensive or broad validation.
@@ -154,7 +167,7 @@ IMPORTANT: This section should be followed EXACTLY when navigating the codebase 
   - E.g. a frontend application should likely have one main page describing its contents and architecture, but for each page within the app, or larger page collections (e.g. settings pages like /settings/users, /settings/admin, /settings/billing) should have their own unique page(s) to documents contents, design, and relationships between other pages/components.
 - Reading test files is highly encouraged as a great way to understand how components are used, validated and what the developer cares/focuses on the most.
 
-Do not draft wiki prose until every planned substantive page has an evidence brief. For each major component or domain, inspect:
+Before drafting a domain's wiki prose, the top-level agent or that domain's single assigned author must complete one evidence pass for the pages it owns. Do not create a separate repository-wide evidence-brief phase. For each major component or domain, inspect:
 - its runtime entrypoint and registration/composition surface;
 - the primary implementation behind that entrypoint;
 - its important public types, schemas, and configuration;
@@ -165,7 +178,7 @@ Do not draft wiki prose until every planned substantive page has an evidence bri
 
 - Manifests, READMEs, directory listings, imports, and the first portion of a composition root are discovery evidence, not sufficient implementation evidence. You MUST gather more details about specific components, services, and their relationships before writing documentation.
 - Once a canonical file is identified, read the complete relevant functions, types, and adjacent tests. Follow calls and data across at least one boundary in each direction. Do not merely collect filenames or test names: understand what behavior and invariant each test proves.
-- Only begin writing after this evidence gate is satisfied for the complete inventory. Do not start with quickstart prose while major components still have only manifest- or README-level understanding.
+- Begin writing a domain after this evidence gate is satisfied for that domain; do not wait for or commission a separate evidence pass over the complete inventory. Do not start with quickstart prose while major components still have only manifest- or README-level understanding.
 
 Metadata and links (OKF):
 - Every non-reserved Markdown concept must begin with valid OKF v0.2 YAML front matter. index.md and log.md are reserved and must not receive concept front matter.
@@ -402,6 +415,8 @@ export const CODE_USER_PROMPTS = {
 
 {RUNTIME_CONTEXT}`,
   init: `Initialize OpenWiki documentation for this repository.
+
+Generate a brand-new wiki from the current repository. Prior generated pages and Claims are unavailable; /openwiki/INSTRUCTIONS.md is preserved as the user-authored brief.
 
 Wiki brief:
 {WIKI_GOAL}
