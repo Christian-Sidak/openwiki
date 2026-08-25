@@ -65,6 +65,7 @@ const harness = vi.hoisted(() => ({
   agentOptions: [] as CapturedAgentOptions[],
   beginCalls: 0,
   changedPaths: ["README.md"],
+  completionCurrent: undefined as boolean | undefined,
   currentRun: undefined as HarnessRun | undefined,
   driftOnce: false,
   filesystemTools: [] as string[][],
@@ -72,12 +73,45 @@ const harness = vi.hoisted(() => ({
   invalidPageSubmissions: 0,
   invalidPlanSubmissions: 0,
   noop: false,
+  pageAttemptBegins: 0,
+  pageAttemptRollbacks: 0,
   pageSubmissionCalls: 0,
   pageToolResults: [] as unknown[],
+  pageWorkerFailures: 0,
+  pageWorkerPostSubmitFailures: 0,
   planSubmissionCalls: 0,
   planToolResults: [] as unknown[],
   planPaths: ["/openwiki/quickstart.md", "/openwiki/architecture.md"],
   resumed: false,
+  rollbackFailures: 0,
+}));
+
+vi.mock("../../src/generation/page-attempt.js", () => ({
+  beginRepositoryPageAttempt() {
+    harness.pageAttemptBegins += 1;
+    return Promise.resolve({
+      rollback() {
+        harness.pageAttemptRollbacks += 1;
+        if (harness.rollbackFailures > 0) {
+          harness.rollbackFailures -= 1;
+          return Promise.reject(new Error("injected rollback failure"));
+        }
+        return Promise.resolve();
+      },
+    });
+  },
+}));
+
+vi.mock("../../src/generation/page-manifest.js", () => ({
+  isRepositoryPageCompletionCurrent(_root: string, page: string) {
+    if (harness.completionCurrent !== undefined) {
+      return Promise.resolve(harness.completionCurrent);
+    }
+    const job = harness.currentRun?.state.plan?.pages.find(
+      ({ path }) => path === page,
+    );
+    return Promise.resolve(job?.status === "complete");
+  },
 }));
 
 vi.mock("deepagents", async (importOriginal) => {
@@ -192,6 +226,11 @@ vi.mock("deepagents", async (importOriginal) => {
               harness.planToolResults.push(rejection);
             }
 
+            if (toolName === "submit_page" && harness.pageWorkerFailures > 0) {
+              harness.pageWorkerFailures -= 1;
+              throw new Error("injected page worker failure");
+            }
+
             const input =
               toolName === "submit_plan"
                 ? {
@@ -211,6 +250,13 @@ vi.mock("deepagents", async (importOriginal) => {
                     ],
                   };
             await completionTool.invoke(input);
+            if (
+              toolName === "submit_page" &&
+              harness.pageWorkerPostSubmitFailures > 0
+            ) {
+              harness.pageWorkerPostSubmitFailures -= 1;
+              throw new Error("injected post-submit worker failure");
+            }
           },
         }),
       );
@@ -220,6 +266,9 @@ vi.mock("deepagents", async (importOriginal) => {
 });
 
 vi.mock("../../src/generation/repository-run.js", () => ({
+  getRepositoryRunSourceCheckpoint() {
+    return { sourceFingerprint: `sha256:${"a".repeat(64)}` };
+  },
   beginRepositoryRun() {
     harness.beginCalls += 1;
     if (harness.noop) {
@@ -377,6 +426,7 @@ beforeEach(() => {
   harness.agentOptions = [];
   harness.beginCalls = 0;
   harness.changedPaths = ["README.md"];
+  harness.completionCurrent = undefined;
   harness.currentRun = undefined;
   harness.driftOnce = false;
   harness.filesystemTools = [];
@@ -384,12 +434,17 @@ beforeEach(() => {
   harness.invalidPageSubmissions = 0;
   harness.invalidPlanSubmissions = 0;
   harness.noop = false;
+  harness.pageAttemptBegins = 0;
+  harness.pageAttemptRollbacks = 0;
   harness.pageSubmissionCalls = 0;
   harness.pageToolResults = [];
+  harness.pageWorkerFailures = 0;
+  harness.pageWorkerPostSubmitFailures = 0;
   harness.planSubmissionCalls = 0;
   harness.planToolResults = [];
   harness.planPaths = ["/openwiki/quickstart.md", "/openwiki/architecture.md"];
   harness.resumed = false;
+  harness.rollbackFailures = 0;
 });
 
 describe("runNativeRepositoryGeneration", () => {
@@ -493,6 +548,59 @@ describe("runNativeRepositoryGeneration", () => {
       '"retry":"Correct the plan and call submit_plan again."',
     );
     expect(harness.finishCalls).toBe(1);
+  });
+
+  test("rolls back a failed page worker and leaves its job pending", async () => {
+    harness.pageWorkerFailures = 1;
+    harness.planPaths = ["/openwiki/failed.md"];
+
+    await expect(runHarness()).rejects.toThrow("injected page worker failure");
+
+    expect(harness.pageAttemptBegins).toBe(1);
+    expect(harness.pageAttemptRollbacks).toBe(1);
+    expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("pending");
+    expect(harness.finishCalls).toBe(0);
+  });
+
+  test("keeps a durably completed page after a later worker failure", async () => {
+    harness.pageWorkerPostSubmitFailures = 1;
+    harness.planPaths = ["/openwiki/completed.md"];
+
+    await expect(runHarness()).rejects.toThrow(
+      "injected post-submit worker failure",
+    );
+
+    expect(harness.pageAttemptBegins).toBe(1);
+    expect(harness.pageAttemptRollbacks).toBe(0);
+    expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("complete");
+  });
+
+  test("rolls back when a successful worker lacks durable completion", async () => {
+    harness.completionCurrent = false;
+    harness.planPaths = ["/openwiki/unproven.md"];
+
+    await expect(runHarness()).rejects.toThrow(
+      "Page worker exited without durable completion for /openwiki/unproven.md.",
+    );
+
+    expect(harness.pageAttemptRollbacks).toBe(1);
+  });
+
+  test("reports both worker and rollback failures", async () => {
+    harness.pageWorkerFailures = 1;
+    harness.rollbackFailures = 1;
+    harness.planPaths = ["/openwiki/failed.md"];
+
+    const failure = await runHarness().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({
+      message: "OpenWiki page attempt rollback failed for /openwiki/failed.md.",
+      errors: [
+        expect.objectContaining({ message: "injected page worker failure" }),
+        expect.objectContaining({ message: "injected rollback failure" }),
+      ],
+    });
   });
 
   test("filters DeepAgents' automatic task capability at the model boundary", async () => {

@@ -163,6 +163,13 @@ export interface RepositoryRunState {
   sourceFingerprint: string;
 
   /**
+   * Git HEAD paired with `sourceFingerprint` for the active semantic plan.
+   *
+   * @default undefined for an unborn repository.
+   */
+  targetGitHead?: string;
+
+  /**
    * Actual user/connector context needed for planning and replanning.
    */
   planningContext?: string;
@@ -259,6 +266,7 @@ const RepositoryRunStateSchema = z
     requiredRewritePages: z.array(z.string().min(1)),
     initialPages: z.array(z.string().min(1)),
     sourceFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    targetGitHead: z.string().min(1).optional(),
     planningContext: z.string().min(1).optional(),
     actor: z
       .object({

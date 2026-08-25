@@ -6,10 +6,30 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const failureHarness = vi.hoisted(() => ({
+  manifestWrites: 0,
   metadataWrites: 0,
   stateWrites: 0,
   stateRemovals: 0,
 }));
+
+vi.mock("../../src/generation/page-manifest.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("../../src/generation/page-manifest.js")
+    >();
+  return {
+    ...actual,
+    async recordRepositoryPageCompletion(
+      ...args: Parameters<typeof actual.recordRepositoryPageCompletion>
+    ) {
+      if (failureHarness.manifestWrites > 0) {
+        failureHarness.manifestWrites -= 1;
+        throw new Error("injected page-manifest write failure");
+      }
+      return actual.recordRepositoryPageCompletion(...args);
+    },
+  };
+});
 
 vi.mock("../../src/agent/utils.js", async (importOriginal) => {
   const actual =
@@ -68,6 +88,10 @@ import {
   type ActiveRepositoryRun,
   type BeginRepositoryRunResult,
 } from "../../src/generation/repository-run.ts";
+import {
+  readRepositoryPageManifest,
+  writeRepositoryPageManifest,
+} from "../../src/generation/page-manifest.ts";
 import {
   readRepositoryRunState,
   repositoryRunStatePath,
@@ -227,6 +251,7 @@ async function completeCurrentPage(
 }
 
 beforeEach(() => {
+  failureHarness.manifestWrites = 0;
   failureHarness.metadataWrites = 0;
   failureHarness.stateWrites = 0;
   failureHarness.stateRemovals = 0;
@@ -350,6 +375,9 @@ describe("beginRepositoryRun", () => {
   test("resumes the same owner while rejecting mode, language, and producer conflicts", async () => {
     const root = await createRepository();
     const initial = await beginForcedUpdate(root, "Original context");
+    expect(initial.state.targetGitHead).toBe(
+      await git(root, ["rev-parse", "HEAD"]),
+    );
 
     await expect(
       beginRepositoryRun({ root, mode: "init", actor: ACTOR }),
@@ -384,6 +412,121 @@ describe("beginRepositoryRun", () => {
     });
     expect(resumed.state.actor.metadataModel).toBe("replacement-model");
     expect(resumed.state.planningContext).toBe("Replacement context");
+  });
+
+  test("backfills a legacy target HEAD and replaces it with paired drift state", async () => {
+    const root = await createRepository();
+    const initial = await beginForcedUpdate(root);
+    await submitRepositoryPlan(initial, { pages: [] });
+    const legacyState = JSON.parse(
+      await readFile(repositoryRunStatePath(root), "utf8"),
+    ) as Record<string, unknown>;
+    delete legacyState.targetGitHead;
+    await writeFile(
+      repositoryRunStatePath(root),
+      `${JSON.stringify(legacyState, null, 2)}\n`,
+      "utf8",
+    );
+
+    const sameSource = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    );
+    expect(sameSource.state.targetGitHead).toBe(
+      await git(root, ["rev-parse", "HEAD"]),
+    );
+    expect(sameSource.state.plan).toBeDefined();
+
+    const persisted = JSON.parse(
+      await readFile(repositoryRunStatePath(root), "utf8"),
+    ) as Record<string, unknown>;
+    delete persisted.targetGitHead;
+    await writeFile(
+      repositoryRunStatePath(root),
+      `${JSON.stringify(persisted, null, 2)}\n`,
+      "utf8",
+    );
+    await writeFile(path.join(root, "README.md"), "# Changed source\n", "utf8");
+    await git(root, ["add", "README.md"]);
+    await git(root, ["commit", "--quiet", "-m", "change source"]);
+    const changedHead = await git(root, ["rev-parse", "HEAD"]);
+
+    const drifted = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    );
+    expect(drifted.state.targetGitHead).toBe(changedHead);
+    expect(drifted.state.plan).toBeUndefined();
+    expect(drifted.state.phase).toBe("planning");
+  });
+
+  test("seeds only a verified successful legacy baseline", async () => {
+    const completeRoot = await createRepository();
+    const completeStore = new ClaimsStore(completeRoot);
+    const page = "/openwiki/quickstart.md";
+    const pageVersion = await completeStore.hashPage(page);
+    await completeStore.writePage(page, {
+      schemaVersion: 1,
+      pageVersion,
+      claims: [],
+      verification: { by: "openwiki/test", at: STARTED_AT },
+    });
+    await git(completeRoot, ["add", "openwiki/.claims/quickstart.json"]);
+    await git(completeRoot, ["commit", "--quiet", "-m", "add legacy claims"]);
+    const completeHead = await git(completeRoot, ["rev-parse", "HEAD"]);
+    const completeMetadataPath = path.join(
+      completeRoot,
+      "openwiki",
+      ".last-update.json",
+    );
+    const completeMetadata = JSON.parse(
+      await readFile(completeMetadataPath, "utf8"),
+    ) as Record<string, unknown>;
+    await writeFile(
+      completeMetadataPath,
+      `${JSON.stringify({ ...completeMetadata, gitHead: completeHead }, null, 2)}\n`,
+      "utf8",
+    );
+    const completeResult = await beginRepositoryRun({
+      root: completeRoot,
+      mode: "update",
+      actor: ACTOR,
+      now: () => new Date(STARTED_AT),
+    });
+    expect(completeResult.view.status).toBe("noop");
+    const completeManifest = await readRepositoryPageManifest(completeRoot);
+    expect(completeManifest.pages[page]).toMatchObject({
+      gitHead: completeHead,
+      pageVersion,
+    });
+
+    const interruptedRoot = await createRepository();
+    const interruptedStore = new ClaimsStore(interruptedRoot);
+    await interruptedStore.writePage(page, {
+      schemaVersion: 1,
+      pageVersion: await interruptedStore.hashPage(page),
+      claims: [],
+      verification: { by: "openwiki/test", at: STARTED_AT },
+    });
+    const metadataPath = path.join(
+      interruptedRoot,
+      "openwiki",
+      ".last-update.json",
+    );
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify({ ...metadata, status: "interrupted" }, null, 2)}\n`,
+      "utf8",
+    );
+
+    await beginForcedUpdate(interruptedRoot);
+
+    await expect(readRepositoryPageManifest(interruptedRoot)).resolves.toEqual({
+      schemaVersion: 1,
+      pages: {},
+    });
   });
 });
 
@@ -496,10 +639,57 @@ describe("repository page queue", () => {
       page: "/openwiki/quickstart.md",
       remaining: 0,
     });
+    await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
+      pages: {
+        "/openwiki/quickstart.md": {
+          sourceFingerprint: run.state.sourceFingerprint,
+          gitHead: run.state.targetGitHead,
+        },
+      },
+    });
 
     await expect(
       submitRepositoryPage(run, { jobId: next.job.id, claims: [] }),
     ).resolves.toMatchObject({ status: "complete", remaining: 0 });
+  });
+
+  test("leaves the queue pending when page-manifest persistence fails", async () => {
+    const root = await createRepository();
+    const run = await beginForcedUpdate(root);
+    await submitRepositoryPlan(run, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the entry point.",
+        },
+      ],
+    });
+    const next = await nextRepositoryPage(run);
+    if (next.status !== "pending") throw new Error("Expected pending job.");
+    await run.backend.write(next.job.path, validPage("Quickstart"));
+    failureHarness.manifestWrites = 1;
+
+    await expect(
+      submitRepositoryPage(run, {
+        jobId: next.job.id,
+        claims: [
+          {
+            statement: "The repository has a README.",
+            evidence: [{ resource: "repo://README.md" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow("injected page-manifest write failure");
+
+    expect(run.state.plan?.pages[0]?.status).toBe("pending");
+    expect((await readRepositoryRunState(root))?.plan?.pages[0]?.status).toBe(
+      "pending",
+    );
+    await expect(readRepositoryPageManifest(root)).resolves.toEqual({
+      schemaVersion: 1,
+      pages: {},
+    });
   });
 
   test("keeps a durably claimed page pending when completion checkpointing fails", async () => {
@@ -537,10 +727,73 @@ describe("repository page queue", () => {
     ).resolves.toMatchObject({
       claims: [expect.objectContaining({ statement: claims[0].statement })],
     });
+    await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
+      pages: {
+        "/openwiki/quickstart.md": {
+          sourceFingerprint: run.state.sourceFingerprint,
+        },
+      },
+    });
+
+    const resumed = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    );
+    expect(resumed.state.plan?.pages[0]?.status).toBe("complete");
+    expect((await readRepositoryRunState(root))?.plan?.pages[0]?.status).toBe(
+      "complete",
+    );
+  });
+
+  test("does not promote a pending job from stale manifest coverage", async () => {
+    const root = await createRepository();
+    const run = await beginForcedUpdate(root);
+    await submitRepositoryPlan(run, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the entry point.",
+        },
+      ],
+    });
+    await writeRepositoryPageManifest(root, {
+      schemaVersion: 1,
+      pages: {
+        "/openwiki/quickstart.md": {
+          sourceFingerprint: run.state.sourceFingerprint,
+          ...(run.state.targetGitHead
+            ? { gitHead: run.state.targetGitHead }
+            : {}),
+          pageVersion: `sha256:${"f".repeat(64)}`,
+        },
+      },
+    });
+
+    const resumed = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    );
+
+    expect(resumed.state.plan?.pages[0]?.status).toBe("pending");
+  });
+
+  test("rejects a completed job whose Markdown lost its durable proof", async () => {
+    const root = await createRepository();
+    const run = await beginForcedUpdate(root);
+    await submitRepositoryPlan(run, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the entry point.",
+        },
+      ],
+    });
+    await completeCurrentPage(run, "Quickstart");
+    await writeWikiPage(root, "quickstart.md", validPage("Edited Later"));
 
     await expect(
-      submitRepositoryPage(run, { jobId: next.job.id, claims }),
-    ).resolves.toMatchObject({ status: "complete", remaining: 0 });
+      beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    ).rejects.toMatchObject({ code: "invalid_state" });
   });
 
   test("rejects out-of-order submission and invalid final frontmatter", async () => {

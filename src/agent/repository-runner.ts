@@ -6,9 +6,12 @@ import { createDeepAgent, createFilesystemMiddleware } from "deepagents";
 import { createMiddleware } from "langchain";
 import { z } from "zod";
 import { RepositoryRunError } from "../generation/errors.js";
+import { beginRepositoryPageAttempt } from "../generation/page-attempt.js";
+import { isRepositoryPageCompletionCurrent } from "../generation/page-manifest.js";
 import {
   beginRepositoryRun,
   finishRepositoryRun,
+  getRepositoryRunSourceCheckpoint,
   nextRepositoryPage,
   submitRepositoryPage,
   submitRepositoryPlan,
@@ -381,7 +384,63 @@ async function runPendingPageAgents(
       pageIndex,
       pageCount: pages.length,
     });
-    await runPageAgent(run, next.job, model, onEvent);
+    const attempt = await beginRepositoryPageAttempt(run.root, next.job.path);
+    let workerError: unknown;
+    try {
+      await runPageAgent(run, next.job, model, onEvent);
+    } catch (error) {
+      workerError = error;
+    }
+    let completed = false;
+    let completionError: unknown;
+    try {
+      completed = await isRepositoryPageCompletionCurrent(
+        run.root,
+        next.job.path,
+        getRepositoryRunSourceCheckpoint(run.state),
+      );
+    } catch (error) {
+      completionError = error;
+    }
+    if (!completed) {
+      const rollbackCauses = [workerError, completionError].filter(
+        (error): error is NonNullable<typeof error> => error != null,
+      );
+      if (rollbackCauses.length === 0) {
+        rollbackCauses.push(
+          new RepositoryRunError(
+            "invalid_state",
+            `Page worker exited without durable completion for ${next.job.path}.`,
+          ),
+        );
+      }
+      try {
+        await attempt.rollback();
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [...rollbackCauses, rollbackError],
+          `OpenWiki page attempt rollback failed for ${next.job.path}.`,
+          { cause: rollbackError },
+        );
+      }
+      if (completionError !== undefined) {
+        workerError =
+          workerError === undefined
+            ? completionError
+            : new AggregateError(
+                [workerError, completionError],
+                `OpenWiki page completion check failed for ${next.job.path}.`,
+              );
+      } else if (workerError === undefined) {
+        [workerError] = rollbackCauses;
+      }
+    }
+    if (workerError !== undefined) {
+      if (workerError instanceof Error) throw workerError;
+      throw new Error(`OpenWiki page worker failed for ${next.job.path}.`, {
+        cause: workerError,
+      });
+    }
   }
 }
 
