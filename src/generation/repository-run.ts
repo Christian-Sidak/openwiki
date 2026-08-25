@@ -45,7 +45,9 @@ import { isFileNotFoundError } from "../platform/fs-errors.js";
 import { RepositoryRunError } from "./errors.js";
 import {
   isRepositoryPageCompletionCurrent,
+  readRepositoryPageManifest,
   recordRepositoryPageCompletion,
+  replaceRepositoryPageManifest,
   seedRepositoryPageManifest,
   type RepositorySourceCheckpoint,
 } from "./page-manifest.js";
@@ -136,6 +138,33 @@ export interface ActiveRepositoryRun {
 }
 
 /**
+ * Pages sharing one committed source baseline and changed-path window.
+ */
+export interface RepositoryPageUpdateWindow {
+  /**
+   * Last committed Git HEAD through which these pages are known correct.
+   *
+   * @default undefined when no trustworthy baseline exists.
+   */
+  baseGitHead?: string;
+
+  /**
+   * Canonical pages that share this baseline.
+   */
+  pages: string[];
+
+  /**
+   * Visible repository paths changed after the shared baseline.
+   */
+  changedPaths: string[];
+
+  /**
+   * Whether the planner must review without a bounded historical baseline.
+   */
+  fullReview: boolean;
+}
+
+/**
  * Host/model-facing view of an active planning or generation run.
  */
 export interface ActiveBeginView {
@@ -193,6 +222,11 @@ export interface ActiveBeginView {
    * Repository paths changed since the previous successful Git HEAD.
    */
   changedPaths: string[];
+
+  /**
+   * Existing factual pages grouped by their committed update baseline.
+   */
+  pageUpdateWindows: RepositoryPageUpdateWindow[];
 
   /**
    * Stable Claims preflight issues supplied to planning.
@@ -330,6 +364,13 @@ export async function beginRepositoryRun(
         context.lastUpdate.gitHead,
       );
     }
+    const seededManifest =
+      input.mode === "update"
+        ? await readRepositoryPageManifest(input.root)
+        : undefined;
+    const hasCompleteBaselineCoverage =
+      input.mode !== "update" ||
+      initialPages.every((page) => seededManifest?.pages[page] !== undefined);
 
     // Claims validation precedes update no-op detection. A clean Git status
     // cannot hide stale or unresolved grounding state.
@@ -339,25 +380,46 @@ export async function beginRepositoryRun(
         ignore,
         input.language,
       );
-      if (preflight.shouldSkip && claimsRuntime.issueCount === 0) {
+      if (
+        preflight.shouldSkip &&
+        claimsRuntime.issueCount === 0 &&
+        hasCompleteBaselineCoverage
+      ) {
+        const source = await createRepositorySourceSnapshot(input.root, ignore);
         await claimsRuntime.finalize(now().toISOString());
-        await writeLastUpdateMetadata(
-          "update",
+        const stableSource = await createRepositorySourceSnapshot(
           input.root,
-          preflight.model,
-          "repository",
-          "complete",
-          preflight.language,
+          ignore,
         );
-        return {
-          view: {
-            status: "noop",
-            root: input.root,
-            mode: "update",
-            language,
-            updatePreflight: preflight,
-          },
-        };
+        if (stableSource.fingerprint === source.fingerprint) {
+          await replaceRepositoryPageManifest(input.root, initialPages, {
+            sourceFingerprint: source.fingerprint,
+            ...(source.gitHead ? { gitHead: source.gitHead } : {}),
+          });
+          const publishedSource = await createRepositorySourceSnapshot(
+            input.root,
+            ignore,
+          );
+          if (publishedSource.fingerprint === source.fingerprint) {
+            await writeLastUpdateMetadata(
+              "update",
+              input.root,
+              preflight.model,
+              "repository",
+              "complete",
+              preflight.language,
+            );
+            return {
+              view: {
+                status: "noop",
+                root: input.root,
+                mode: "update",
+                language,
+                updatePreflight: preflight,
+              },
+            };
+          }
+        }
       }
     }
 
@@ -620,6 +682,17 @@ async function toActiveBeginView(
   resumed: boolean,
 ): Promise<ActiveBeginView> {
   const pages = run.state.plan?.pages ?? [];
+  const pageUpdateWindows =
+    run.state.mode === "update"
+      ? await getRepositoryPageUpdateWindows(
+          run.root,
+          run.ignore,
+          run.state.initialPages,
+        )
+      : [];
+  const changedPaths = [
+    ...new Set(pageUpdateWindows.flatMap((window) => window.changedPaths)),
+  ].sort(compareCodeUnits);
   return {
     status: "active",
     runId: run.state.runId,
@@ -631,18 +704,51 @@ async function toActiveBeginView(
     resumed,
     lastUpdate: run.state.previousLastUpdate,
     ...(run.state.wikiGoal ? { wikiGoal: run.state.wikiGoal } : {}),
-    changedPaths:
-      run.state.mode === "update"
-        ? await getRepositoryChangedPaths(
-            run.root,
-            run.ignore,
-            run.state.baseGitHead,
-          )
-        : [],
+    changedPaths,
+    pageUpdateWindows,
     claimIssues: run.claimsRuntime.issues,
     completedPages: pages.filter(({ status }) => status === "complete").length,
     ...(run.state.plan ? { totalPages: pages.length } : {}),
   };
+}
+
+/**
+ * Groups existing pages by their committed Git baseline for update planning.
+ *
+ * @param root - Absolute repository root.
+ * @param ignore - Active repository read boundary.
+ * @param pages - Factual pages present when the run began.
+ * @returns Stable baseline cohorts with their visible changed paths.
+ */
+async function getRepositoryPageUpdateWindows(
+  root: string,
+  ignore: OpenWikiIgnore,
+  pages: readonly string[],
+): Promise<RepositoryPageUpdateWindow[]> {
+  const manifest = await readRepositoryPageManifest(root);
+  const pagesByBaseline = new Map<string, string[]>();
+  for (const page of pages) {
+    const baseline = manifest.pages[page]?.gitHead ?? "";
+    const group = pagesByBaseline.get(baseline) ?? [];
+    group.push(page);
+    pagesByBaseline.set(baseline, group);
+  }
+
+  const windows: RepositoryPageUpdateWindow[] = [];
+  const baselines = [...pagesByBaseline.keys()].sort(compareCodeUnits);
+  for (const baseline of baselines) {
+    windows.push({
+      ...(baseline ? { baseGitHead: baseline } : {}),
+      pages: [...(pagesByBaseline.get(baseline) ?? [])].sort(compareCodeUnits),
+      changedPaths: await getRepositoryChangedPaths(
+        root,
+        ignore,
+        baseline || undefined,
+      ),
+      fullReview: baseline.length === 0,
+    });
+  }
+  return windows;
 }
 
 /**
@@ -1120,6 +1226,15 @@ export async function finishRepositoryRun(
   await assertRepositoryClaimsDurable(run);
   // Close the check/use race: source must remain unchanged across the entire
   // deterministic finish window, not only at its start.
+  await requireStableSourceFingerprint(run);
+  const store = new ClaimsStore(run.root);
+  await replaceRepositoryPageManifest(
+    run.root,
+    await store.discoverPages(),
+    getRepositoryRunSourceCheckpoint(run.state),
+  );
+  // Manifest construction reads every surviving page. Source must still match
+  // afterward so complete metadata cannot describe a later checkout.
   await requireStableSourceFingerprint(run);
   await persistRunMetadataIfChanged(
     run.state.mode,

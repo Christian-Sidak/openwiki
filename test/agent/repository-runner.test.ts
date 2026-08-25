@@ -308,6 +308,13 @@ vi.mock("../../src/generation/repository-run.js", () => ({
         resumed: harness.resumed || harness.beginCalls > 1,
         lastUpdate: null,
         changedPaths: [...harness.changedPaths],
+        pageUpdateWindows: [
+          {
+            pages: [],
+            changedPaths: [...harness.changedPaths],
+            fullReview: true,
+          },
+        ],
         claimIssues: [],
         completedPages:
           run.state.plan?.pages.filter(({ status }) => status === "complete")
