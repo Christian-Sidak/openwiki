@@ -219,15 +219,24 @@ export async function seedRepositoryPageManifest(
  * @param root - Absolute repository root.
  * @param pages - Complete surviving factual page set after finalization.
  * @param source - Source checkpoint proven by successful whole-run finish.
+ * @param preservePages - Pages whose prior coverage must remain unchanged.
  */
 export async function replaceRepositoryPageManifest(
   root: string,
   pages: readonly string[],
   source: RepositorySourceCheckpoint,
+  preservePages: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const next = createEmptyRepositoryPageManifest();
+  const previous =
+    preservePages.size > 0 ? await readRepositoryPageManifest(root) : null;
   for (const page of pages) {
     const canonicalPage = normalizeWikiPagePath(page);
+    if (preservePages.has(canonicalPage)) {
+      const previousEntry = previous?.pages[canonicalPage];
+      if (previousEntry) next.pages[canonicalPage] = previousEntry;
+      continue;
+    }
     next.pages[canonicalPage] = await buildManifestEntry(
       root,
       canonicalPage,

@@ -27,11 +27,12 @@ import { ClaimsStore } from "../claims/brains/code/store.js";
 import type {
   GroundingIssue,
   InspectedClaim,
+  PageClaims,
 } from "../claims/brains/code/types.js";
 import { ensureCodeModeRepoSetup } from "../ingestion/code-mode.js";
 import {
   parseFrontmatterFields,
-  validatePersistedFile,
+  repairPersistedFile,
 } from "../okf/frontmatter.js";
 import {
   resolveConceptTypeLabel,
@@ -162,6 +163,16 @@ export interface RepositoryPageUpdateWindow {
    * Whether the planner must review without a bounded historical baseline.
    */
   fullReview: boolean;
+}
+
+/**
+ * Page-local durable state captured before a bounded worker starts.
+ */
+export interface RepositoryPageSnapshot {
+  jobId: string;
+  path: string;
+  markdown: string | null;
+  claims: PageClaims | null;
 }
 
 /**
@@ -549,12 +560,26 @@ async function resumeRepositoryRun(
     ignore,
   );
   const sourceChanged = currentSource.fingerprint !== state.sourceFingerprint;
+  const resetSkippedPages =
+    state.plan?.pages.some(({ status }) => status === "skipped") ?? false;
   let nextState: RepositoryRunState = {
     ...state,
     actor: {
       ...state.actor,
       metadataModel: input.actor.metadataModel,
     },
+    ...(state.plan && resetSkippedPages
+      ? {
+          plan: {
+            ...state.plan,
+            pages: state.plan.pages.map((page) =>
+              page.status === "skipped"
+                ? { ...page, status: "pending" as const }
+                : page,
+            ),
+          },
+        }
+      : {}),
   };
   if (sourceChanged) {
     nextState.phase = "planning";
@@ -884,6 +909,139 @@ export async function nextRepositoryPage(
 }
 
 /**
+ * Captures the current pending page and Claims sidecar before model-owned work.
+ */
+export async function captureRepositoryPageSnapshot(
+  run: ActiveRepositoryRun,
+  jobId: string,
+): Promise<RepositoryPageSnapshot> {
+  const current = run.state.plan?.pages.find(
+    ({ status }) => status === "pending",
+  );
+  if (!current || current.id !== jobId) {
+    throw new RepositoryRunError(
+      "invalid_state",
+      "Only the current pending OpenWiki page job may be snapshotted.",
+    );
+  }
+
+  let markdown: string | null = null;
+  try {
+    const read = await run.backend.readRaw(current.path);
+    if (read.error && read.error !== "file_not_found") {
+      throw new RepositoryRunError(
+        "invalid_state",
+        `Could not snapshot ${current.path}: ${read.error}`,
+      );
+    }
+    const content = read.data?.content;
+    if (content !== undefined && typeof content !== "string") {
+      throw new RepositoryRunError(
+        "invalid_state",
+        `Could not snapshot non-text Markdown page ${current.path}.`,
+      );
+    }
+    markdown = content ?? null;
+  } catch (error) {
+    if (!isFileNotFoundError(error)) throw error;
+  }
+
+  return {
+    jobId: current.id,
+    path: current.path,
+    markdown,
+    claims: await new ClaimsStore(run.root).loadPage(current.path),
+  };
+}
+
+/**
+ * Rolls a failed page worker back without advancing its pending checkpoint.
+ */
+export async function skipRepositoryPage(
+  run: ActiveRepositoryRun,
+  snapshot: RepositoryPageSnapshot,
+): Promise<void> {
+  const plan = run.state.plan;
+  const current = plan?.pages.find(({ status }) => status === "pending");
+  if (
+    !plan ||
+    !current ||
+    current.id !== snapshot.jobId ||
+    current.path !== snapshot.path
+  ) {
+    throw new RepositoryRunError(
+      "invalid_state",
+      "The failed page worker no longer owns the current pending job.",
+    );
+  }
+
+  await restoreRepositoryPageMarkdown(run, snapshot);
+
+  const store = new ClaimsStore(run.root);
+  if (snapshot.claims) {
+    await store.writePage(snapshot.path, snapshot.claims);
+  } else {
+    await store.deletePage(snapshot.path);
+  }
+
+  const claimsRuntime = await prepareClaimsRuntime(
+    run.state.mode,
+    "repository",
+    run.root,
+    run.ignore,
+    () => undefined,
+    { resumeInit: run.state.mode === "init" },
+  );
+  if (!claimsRuntime) {
+    throw new Error("Repository Claims runtime was not restored.");
+  }
+  run.claimsRuntime = claimsRuntime;
+
+  await writeLastUpdateMetadata(
+    run.state.mode,
+    run.root,
+    run.state.actor.metadataModel,
+    "repository",
+    "interrupted",
+    run.state.language,
+    run.state.baseGitHead,
+  );
+
+  const nextState: RepositoryRunState = {
+    ...run.state,
+    plan: {
+      ...plan,
+      pages: plan.pages.map((page) =>
+        page.id === snapshot.jobId
+          ? { ...page, status: "skipped" as const }
+          : page,
+      ),
+    },
+  };
+  await writeRepositoryRunState(run.root, nextState);
+  run.state = nextState;
+}
+
+async function restoreRepositoryPageMarkdown(
+  run: ActiveRepositoryRun,
+  snapshot: RepositoryPageSnapshot,
+): Promise<void> {
+  const result =
+    snapshot.markdown === null
+      ? await run.backend.delete(snapshot.path)
+      : await run.backend.write(snapshot.path, snapshot.markdown);
+  if (
+    result.error &&
+    !(snapshot.markdown === null && result.error === "file_not_found")
+  ) {
+    throw new RepositoryRunError(
+      "invalid_state",
+      `Could not restore ${snapshot.path}: ${result.error}`,
+    );
+  }
+}
+
+/**
  * Persists and proves one page's Claims before completing its current job.
  *
  * The in-memory checkpoint changes only after the complete next state is durable.
@@ -944,9 +1102,13 @@ export async function submitRepositoryPage(
     );
   }
 
-  const frontmatter = await validatePersistedFile(run.backend, current.path);
-  if (!frontmatter.valid) {
-    const details = frontmatter.issues
+  const frontmatter = await repairPersistedFile(
+    run.backend,
+    current.path,
+    resolveConceptTypeLabel(run.state.language),
+  );
+  if (!frontmatter.validation.valid) {
+    const details = frontmatter.validation.issues
       .map(
         ({ code, line, message }) =>
           `[${code}]${line ? ` line ${line}:` : ""} ${message}`,
@@ -954,7 +1116,7 @@ export async function submitRepositoryPage(
       .join("; ");
     throw new RepositoryRunError(
       "invalid_input",
-      `Fix invalid front matter in ${current.path} before submission: ${details}`,
+      `Could not deterministically repair front matter in ${current.path}: ${details}`,
     );
   }
 
@@ -1117,6 +1279,7 @@ function isVerificationEvent(
  */
 async function assertRepositoryClaimsDurable(
   run: ActiveRepositoryRun,
+  excludedPages: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const store = new ClaimsStore(run.root);
   const currentPages = new Set(await store.discoverPages());
@@ -1137,6 +1300,7 @@ async function assertRepositoryClaimsDurable(
   for (const page of run.claimsRuntime.session
     .getEvidenceResourcesByPage()
     .keys()) {
+    if (excludedPages.has(page)) continue;
     if (run.claimsRuntime.session.inspectClaims(page).length === 0) continue;
     if (!currentPages.has(page)) {
       throw new RepositoryRunError(
@@ -1189,6 +1353,9 @@ function sameResourceSet(
  */
 export async function finishRepositoryRun(
   run: ActiveRepositoryRun,
+  options: {
+    skippedPageSnapshots?: readonly RepositoryPageSnapshot[];
+  } = {},
 ): Promise<{ status: "complete" }> {
   await requireStableSourceFingerprint(run);
 
@@ -1199,13 +1366,29 @@ export async function finishRepositoryRun(
       "OpenWiki cannot finish before a plan is submitted.",
     );
   }
-  const pending = plan.pages.filter(({ status }) => status !== "complete");
+  const pending = plan.pages.filter(({ status }) => status === "pending");
   if (pending.length > 0) {
     throw new RepositoryRunError(
       "invalid_state",
       `OpenWiki cannot finish with ${pending.length} pending page job(s).`,
     );
   }
+
+  const skippedJobs = plan.pages.filter(({ status }) => status === "skipped");
+  const snapshots = options.skippedPageSnapshots ?? [];
+  const snapshotsByJobId = new Map(
+    snapshots.map((snapshot) => [snapshot.jobId, snapshot]),
+  );
+  if (
+    skippedJobs.length !== snapshots.length ||
+    skippedJobs.some((job) => snapshotsByJobId.get(job.id)?.path !== job.path)
+  ) {
+    throw new RepositoryRunError(
+      "invalid_state",
+      "Every skipped OpenWiki page job requires its original page snapshot before finish.",
+    );
+  }
+  const skippedPages = new Set(skippedJobs.map(({ path }) => path));
 
   await applyAbandonedGeneratedPageDeletions(run, plan);
   await applyPlannedDeletions(run, plan.deletePages);
@@ -1222,8 +1405,12 @@ export async function finishRepositoryRun(
     claimSources: run.claimsRuntime.session.getEvidenceResourcesByPage(),
   });
 
-  await run.claimsRuntime.finalize(run.state.startedAt);
-  await assertRepositoryClaimsDurable(run);
+  for (const snapshot of snapshots) {
+    await restoreRepositoryPageMarkdown(run, snapshot);
+  }
+
+  await run.claimsRuntime.finalize(run.state.startedAt, skippedPages);
+  await assertRepositoryClaimsDurable(run, skippedPages);
   // Close the check/use race: source must remain unchanged across the entire
   // deterministic finish window, not only at its start.
   await requireStableSourceFingerprint(run);
@@ -1232,19 +1419,32 @@ export async function finishRepositoryRun(
     run.root,
     await store.discoverPages(),
     getRepositoryRunSourceCheckpoint(run.state),
+    skippedPages,
   );
   // Manifest construction reads every surviving page. Source must still match
   // afterward so complete metadata cannot describe a later checkout.
   await requireStableSourceFingerprint(run);
-  await persistRunMetadataIfChanged(
-    run.state.mode,
-    run.root,
-    run.state.actor.metadataModel,
-    "repository",
-    run.state.beforeContentSnapshot,
-    "complete",
-    run.state.language,
-  );
+  if (skippedPages.size > 0) {
+    await writeLastUpdateMetadata(
+      run.state.mode,
+      run.root,
+      run.state.actor.metadataModel,
+      "repository",
+      "interrupted",
+      run.state.language,
+      run.state.baseGitHead,
+    );
+  } else {
+    await persistRunMetadataIfChanged(
+      run.state.mode,
+      run.root,
+      run.state.actor.metadataModel,
+      "repository",
+      run.state.beforeContentSnapshot,
+      "complete",
+      run.state.language,
+    );
+  }
 
   // Delete this LAST. If anything above fails, begin() can reconstruct and retry.
   await removeRepositoryRunState(run.root);

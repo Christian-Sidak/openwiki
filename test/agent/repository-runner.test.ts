@@ -9,7 +9,7 @@ type HarnessPage = {
   seedPaths: string[];
   relatedPages: string[];
   instructions: string[];
-  status: "pending" | "complete";
+  status: "pending" | "skipped" | "complete";
 };
 
 type HarnessPlan = {
@@ -65,7 +65,6 @@ const harness = vi.hoisted(() => ({
   agentOptions: [] as CapturedAgentOptions[],
   beginCalls: 0,
   changedPaths: ["README.md"],
-  completionCurrent: undefined as boolean | undefined,
   currentRun: undefined as HarnessRun | undefined,
   driftOnce: false,
   filesystemTools: [] as string[][],
@@ -73,8 +72,6 @@ const harness = vi.hoisted(() => ({
   invalidPageSubmissions: 0,
   invalidPlanSubmissions: 0,
   noop: false,
-  pageAttemptBegins: 0,
-  pageAttemptRollbacks: 0,
   pageSubmissionCalls: 0,
   pageToolResults: [] as unknown[],
   pageWorkerFailures: 0,
@@ -83,35 +80,8 @@ const harness = vi.hoisted(() => ({
   planToolResults: [] as unknown[],
   planPaths: ["/openwiki/quickstart.md", "/openwiki/architecture.md"],
   resumed: false,
-  rollbackFailures: 0,
-}));
-
-vi.mock("../../src/generation/page-attempt.js", () => ({
-  beginRepositoryPageAttempt() {
-    harness.pageAttemptBegins += 1;
-    return Promise.resolve({
-      rollback() {
-        harness.pageAttemptRollbacks += 1;
-        if (harness.rollbackFailures > 0) {
-          harness.rollbackFailures -= 1;
-          return Promise.reject(new Error("injected rollback failure"));
-        }
-        return Promise.resolve();
-      },
-    });
-  },
-}));
-
-vi.mock("../../src/generation/page-manifest.js", () => ({
-  isRepositoryPageCompletionCurrent(_root: string, page: string) {
-    if (harness.completionCurrent !== undefined) {
-      return Promise.resolve(harness.completionCurrent);
-    }
-    const job = harness.currentRun?.state.plan?.pages.find(
-      ({ path }) => path === page,
-    );
-    return Promise.resolve(job?.status === "complete");
-  },
+  restoreCalls: 0,
+  workerExitsWithoutSubmit: false,
 }));
 
 vi.mock("deepagents", async (importOriginal) => {
@@ -249,13 +219,19 @@ vi.mock("deepagents", async (importOriginal) => {
                       },
                     ],
                   };
-            await completionTool.invoke(input);
-            if (
-              toolName === "submit_page" &&
-              harness.pageWorkerPostSubmitFailures > 0
-            ) {
-              harness.pageWorkerPostSubmitFailures -= 1;
-              throw new Error("injected post-submit worker failure");
+            const exitWithoutSubmit =
+              toolName === "submit_page" && harness.workerExitsWithoutSubmit;
+            if (exitWithoutSubmit) {
+              harness.workerExitsWithoutSubmit = false;
+            } else {
+              await completionTool.invoke(input);
+              if (
+                toolName === "submit_page" &&
+                harness.pageWorkerPostSubmitFailures > 0
+              ) {
+                harness.pageWorkerPostSubmitFailures -= 1;
+                throw new Error("injected post-submit worker failure");
+              }
             }
           },
         }),
@@ -266,8 +242,20 @@ vi.mock("deepagents", async (importOriginal) => {
 });
 
 vi.mock("../../src/generation/repository-run.js", () => ({
-  getRepositoryRunSourceCheckpoint() {
-    return { sourceFingerprint: `sha256:${"a".repeat(64)}` };
+  captureRepositoryPageSnapshot(_run: HarnessRun, jobId: string) {
+    return Promise.resolve({
+      jobId,
+      path: "/openwiki/snapshot.md",
+      markdown: "original\n",
+      claims: null,
+    });
+  },
+  skipRepositoryPage(run: HarnessRun, snapshot: { jobId: string }) {
+    harness.restoreCalls += 1;
+    const job = run.state.plan?.pages.find(({ id }) => id === snapshot.jobId);
+    if (!job) throw new Error("Expected skipped harness page job.");
+    job.status = "skipped";
+    return Promise.resolve();
   },
   beginRepositoryRun() {
     harness.beginCalls += 1;
@@ -433,7 +421,6 @@ beforeEach(() => {
   harness.agentOptions = [];
   harness.beginCalls = 0;
   harness.changedPaths = ["README.md"];
-  harness.completionCurrent = undefined;
   harness.currentRun = undefined;
   harness.driftOnce = false;
   harness.filesystemTools = [];
@@ -441,8 +428,6 @@ beforeEach(() => {
   harness.invalidPageSubmissions = 0;
   harness.invalidPlanSubmissions = 0;
   harness.noop = false;
-  harness.pageAttemptBegins = 0;
-  harness.pageAttemptRollbacks = 0;
   harness.pageSubmissionCalls = 0;
   harness.pageToolResults = [];
   harness.pageWorkerFailures = 0;
@@ -451,7 +436,8 @@ beforeEach(() => {
   harness.planToolResults = [];
   harness.planPaths = ["/openwiki/quickstart.md", "/openwiki/architecture.md"];
   harness.resumed = false;
-  harness.rollbackFailures = 0;
+  harness.restoreCalls = 0;
+  harness.workerExitsWithoutSubmit = false;
 });
 
 describe("runNativeRepositoryGeneration", () => {
@@ -557,57 +543,27 @@ describe("runNativeRepositoryGeneration", () => {
     expect(harness.finishCalls).toBe(1);
   });
 
-  test("rolls back a failed page worker and leaves its job pending", async () => {
+  test("skips a failed page worker and continues the queue", async () => {
     harness.pageWorkerFailures = 1;
-    harness.planPaths = ["/openwiki/failed.md"];
+    harness.planPaths = ["/openwiki/failed.md", "/openwiki/later.md"];
 
-    await expect(runHarness()).rejects.toThrow("injected page worker failure");
+    await expect(runHarness()).resolves.toBeDefined();
 
-    expect(harness.pageAttemptBegins).toBe(1);
-    expect(harness.pageAttemptRollbacks).toBe(1);
-    expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("pending");
-    expect(harness.finishCalls).toBe(0);
+    expect(harness.restoreCalls).toBe(1);
+    expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("skipped");
+    expect(harness.currentRun?.state.plan?.pages[1]?.status).toBe("complete");
+    expect(harness.finishCalls).toBe(1);
   });
 
   test("keeps a durably completed page after a later worker failure", async () => {
     harness.pageWorkerPostSubmitFailures = 1;
     harness.planPaths = ["/openwiki/completed.md"];
 
-    await expect(runHarness()).rejects.toThrow(
-      "injected post-submit worker failure",
-    );
+    await expect(runHarness()).resolves.toBeDefined();
 
-    expect(harness.pageAttemptBegins).toBe(1);
-    expect(harness.pageAttemptRollbacks).toBe(0);
+    expect(harness.restoreCalls).toBe(0);
     expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("complete");
-  });
-
-  test("rolls back when a successful worker lacks durable completion", async () => {
-    harness.completionCurrent = false;
-    harness.planPaths = ["/openwiki/unproven.md"];
-
-    await expect(runHarness()).rejects.toThrow(
-      "Page worker exited without durable completion for /openwiki/unproven.md.",
-    );
-
-    expect(harness.pageAttemptRollbacks).toBe(1);
-  });
-
-  test("reports both worker and rollback failures", async () => {
-    harness.pageWorkerFailures = 1;
-    harness.rollbackFailures = 1;
-    harness.planPaths = ["/openwiki/failed.md"];
-
-    const failure = await runHarness().catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect(failure).toMatchObject({
-      message: "OpenWiki page attempt rollback failed for /openwiki/failed.md.",
-      errors: [
-        expect.objectContaining({ message: "injected page worker failure" }),
-        expect.objectContaining({ message: "injected rollback failure" }),
-      ],
-    });
+    expect(harness.finishCalls).toBe(1);
   });
 
   test("filters DeepAgents' automatic task capability at the model boundary", async () => {
@@ -698,6 +654,26 @@ describe("runNativeRepositoryGeneration", () => {
           event.type === "repository_progress" && event.stage === "replanning",
       ),
     ).toHaveLength(2);
+  });
+
+  test("restores and leaves a page pending when its worker does not submit", async () => {
+    harness.workerExitsWithoutSubmit = true;
+    harness.planPaths = ["/openwiki/testing.md", "/openwiki/later.md"];
+
+    const events = await runHarness();
+
+    expect(harness.restoreCalls).toBe(1);
+    expect(harness.finishCalls).toBe(1);
+    expect(harness.currentRun?.state.plan?.pages[0]?.status).toBe("skipped");
+    expect(harness.currentRun?.state.plan?.pages[1]?.status).toBe("complete");
+    expect(harness.agentOptions).toHaveLength(3);
+    expect(
+      events.some(
+        (event) =>
+          event.type === "text" &&
+          event.text.includes("reconsidered on the next update"),
+      ),
+    ).toBe(true);
   });
 
   test("reports strict no-op without constructing a worker", async () => {

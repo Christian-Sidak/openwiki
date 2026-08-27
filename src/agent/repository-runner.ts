@@ -6,19 +6,19 @@ import { createDeepAgent, createFilesystemMiddleware } from "deepagents";
 import { createMiddleware } from "langchain";
 import { z } from "zod";
 import { RepositoryRunError } from "../generation/errors.js";
-import { beginRepositoryPageAttempt } from "../generation/page-attempt.js";
-import { isRepositoryPageCompletionCurrent } from "../generation/page-manifest.js";
 import {
   beginRepositoryRun,
+  captureRepositoryPageSnapshot,
   finishRepositoryRun,
-  getRepositoryRunSourceCheckpoint,
   nextRepositoryPage,
+  skipRepositoryPage,
   submitRepositoryPage,
   submitRepositoryPlan,
   type ActiveBeginView,
   type ActiveRepositoryRun,
   type BeginRepositoryRunResult,
   type NextRepositoryPageResult,
+  type RepositoryPageSnapshot,
 } from "../generation/repository-run.js";
 import type { RepositoryRunMode } from "../generation/run-state.js";
 import { OPENWIKI_PRODUCER_ACTOR } from "../version.js";
@@ -215,7 +215,12 @@ export async function runNativeRepositoryGeneration(
       );
     }
 
-    await runPendingPageAgents(run, options.model, options.onEvent, view);
+    const skippedPageSnapshots = await runPendingPageAgents(
+      run,
+      options.model,
+      options.onEvent,
+      view,
+    );
     options.onEvent?.({
       type: "repository_progress",
       stage: "finalizing",
@@ -224,7 +229,7 @@ export async function runNativeRepositoryGeneration(
     });
 
     try {
-      await finishRepositoryRun(run);
+      await finishRepositoryRun(run, { skippedPageSnapshots });
       return { skipped: false };
     } catch (error) {
       if (!isSourceDriftInvalidation(error)) {
@@ -369,10 +374,11 @@ async function runPendingPageAgents(
   model: BaseChatModel,
   onEvent: ((event: OpenWikiRunEvent) => void) | undefined,
   view: ActiveBeginView,
-): Promise<void> {
+): Promise<RepositoryPageSnapshot[]> {
+  const skipped: RepositoryPageSnapshot[] = [];
   while (true) {
     const next = await nextRepositoryPage(run);
-    if (next.status === "complete") return;
+    if (next.status === "complete") return skipped;
 
     const pages = run.state.plan?.pages ?? [];
     const pageIndex = pages.findIndex(({ id }) => id === next.job.id) + 1;
@@ -384,63 +390,8 @@ async function runPendingPageAgents(
       pageIndex,
       pageCount: pages.length,
     });
-    const attempt = await beginRepositoryPageAttempt(run.root, next.job.path);
-    let workerError: unknown;
-    try {
-      await runPageAgent(run, next.job, model, onEvent);
-    } catch (error) {
-      workerError = error;
-    }
-    let completed = false;
-    let completionError: unknown;
-    try {
-      completed = await isRepositoryPageCompletionCurrent(
-        run.root,
-        next.job.path,
-        getRepositoryRunSourceCheckpoint(run.state),
-      );
-    } catch (error) {
-      completionError = error;
-    }
-    if (!completed) {
-      const rollbackCauses = [workerError, completionError].filter(
-        (error): error is NonNullable<typeof error> => error != null,
-      );
-      if (rollbackCauses.length === 0) {
-        rollbackCauses.push(
-          new RepositoryRunError(
-            "invalid_state",
-            `Page worker exited without durable completion for ${next.job.path}.`,
-          ),
-        );
-      }
-      try {
-        await attempt.rollback();
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [...rollbackCauses, rollbackError],
-          `OpenWiki page attempt rollback failed for ${next.job.path}.`,
-          { cause: rollbackError },
-        );
-      }
-      if (completionError !== undefined) {
-        workerError =
-          workerError === undefined
-            ? completionError
-            : new AggregateError(
-                [workerError, completionError],
-                `OpenWiki page completion check failed for ${next.job.path}.`,
-              );
-      } else if (workerError === undefined) {
-        [workerError] = rollbackCauses;
-      }
-    }
-    if (workerError !== undefined) {
-      if (workerError instanceof Error) throw workerError;
-      throw new Error(`OpenWiki page worker failed for ${next.job.path}.`, {
-        cause: workerError,
-      });
-    }
+    const skippedSnapshot = await runPageAgent(run, next.job, model, onEvent);
+    if (skippedSnapshot) skipped.push(skippedSnapshot);
   }
 }
 
@@ -457,7 +408,8 @@ async function runPageAgent(
   job: PendingPageJob,
   model: BaseChatModel,
   onEvent?: (event: OpenWikiRunEvent) => void,
-): Promise<void> {
+): Promise<RepositoryPageSnapshot | null> {
+  const snapshot = await captureRepositoryPageSnapshot(run, job.id);
   const ignore = await OpenWikiIgnore.load(run.root);
   const wikiBackend = new OpenWikiLocalShellBackend({
     docsOnly: true,
@@ -471,6 +423,7 @@ async function runPageAgent(
   });
 
   let submitted = false;
+  let fatalSubmissionFailure = false;
   const submitPageTool = new DynamicStructuredTool({
     name: "submit_page",
     description:
@@ -500,6 +453,7 @@ async function runPageAgent(
               ?.id,
           );
         }
+        fatalSubmissionFailure = true;
         throw error;
       }
     },
@@ -528,20 +482,41 @@ async function runPageAgent(
     ),
   });
 
-  await streamWorkerTools(
-    agent,
-    [
-      {
-        role: "user",
-        content: "Research and document the assigned page, then submit it.",
-      },
-    ],
-    onEvent,
-  );
-
-  if (!submitted) {
-    throw new Error(`${job.path} worker exited without submit_page.`);
+  try {
+    await streamWorkerTools(
+      agent,
+      [
+        {
+          role: "user",
+          content: "Research and document the assigned page, then submit it.",
+        },
+      ],
+      onEvent,
+    );
+  } catch (error) {
+    if (submitted) return null;
+    if (fatalSubmissionFailure) throw error;
+    await skipRepositoryPage(run, snapshot);
+    emitDeferredPageWarning(job.path, onEvent);
+    return snapshot;
   }
+
+  if (submitted) return null;
+
+  await skipRepositoryPage(run, snapshot);
+  emitDeferredPageWarning(job.path, onEvent);
+  return snapshot;
+}
+
+function emitDeferredPageWarning(
+  page: string,
+  onEvent?: (event: OpenWikiRunEvent) => void,
+): void {
+  onEvent?.({
+    type: "text",
+    source: "main",
+    text: `${page} was restored after its worker exited without submitting. It was skipped for this update and will be reconsidered on the next update.\n`,
+  });
 }
 
 /**
