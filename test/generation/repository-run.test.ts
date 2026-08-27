@@ -963,6 +963,7 @@ describe("beginRepositoryRun", () => {
       pages: {
         "/openwiki/second.md": {
           gitHead: partialMergeHead,
+          sourceFingerprint: freshRun.state.sourceFingerprint,
         },
         "/openwiki/quickstart.md": {
           gitHead: baselineHead,

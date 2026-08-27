@@ -381,7 +381,10 @@ export async function beginRepositoryRun(
         input.root,
         ignore,
         initialPages,
-        source,
+        {
+          sourceFingerprint: source.fingerprint,
+          ...(source.gitHead ? { gitHead: source.gitHead } : {}),
+        },
       );
     }
     const seededManifest =
