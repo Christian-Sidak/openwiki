@@ -32,7 +32,7 @@ OpenWiki is a CLI that writes and maintains a wiki for your codebase or your per
 
 ## 🎉 What's new
 
-- **Resumable page-job architecture:** repository generation now follows `begin → submit_plan → next_page → submit_page → … → finish`, with a durable ordered page queue, focused per-page workers, strict Claims persistence, and whole-plan invalidation when repository source changes. Interrupted runs can resume when the same checkout persists; ephemeral CI runners do not retain uncommitted run state after failure.
+- **Resumable page-job architecture:** repository generation now follows `begin → submit_plan → next_page → submit_page → … → finish`, with a durable ordered page queue, focused per-page workers, strict Claims persistence, per-page source checkpoints, and partial-progress PRs for ephemeral CI. See [OpenWiki architecture](#openwiki-architecture) for the full flow.
 - **Grounded Claims:** material facts in code wikis now carry versioned source evidence. When that evidence changes or disappears, OpenWiki knows exactly which propositions need to be confirmed, rewritten, or retired.
 - **OpenWiki integrations:** run OpenWiki directly inside Codex, Claude Code, or OpenCode, using the coding agent's authenticated model and native repository tools while OpenWiki manages the documentation lifecycle.
 - **OKF v0.2:** every wiki is a portable Open Knowledge Format bundle with deterministic generation provenance and validated trust and lifecycle metadata.
@@ -119,6 +119,10 @@ Contributors adding another coding agent should follow
 ## Grounded Claims
 
 OpenWiki makes code wikis self-correcting by tracking the material propositions behind factual pages—not just when a Markdown file was last generated. Claims cover the truths future agents rely on: behavior, responsibilities, architecture, data flow, invariants, failure semantics, configuration, and security boundaries. Each one points to exact repository evidence such as `repo://src/server.ts#L40-L82`, with the evidence version OpenWiki observed when the claim was established.
+
+<div align="center">
+  <img alt="OpenWiki Claims reconcile code evidence into OKF page-level trust metadata." src="./static/openwiki-okf-claims.png" width="880">
+</div>
 
 Before an update, OpenWiki checks every persisted evidence version, before even deciding whether the repository is a no-op. A stale or unresolved Claim requires work for its owning page even if the planner omits it. The page worker receives the complete existing Claim set and submits the complete intended replacement set: unchanged Claims keep their IDs and refresh their evidence versions, revised Claims update in place, genuinely new Claims receive new IDs, and omitted Claims are retracted. The Markdown stays clean; structured Claim state lives alongside it under `openwiki/.claims/`.
 
