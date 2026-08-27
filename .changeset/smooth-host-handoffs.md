@@ -1,5 +1,5 @@
 ---
-"openwiki": patch
+"openwiki": minor
 ---
 
-resume repository page queues across native and host integrations while preserving per-page producer provenance
+feat: add durable page-level resumability across local, CI, and host runs
