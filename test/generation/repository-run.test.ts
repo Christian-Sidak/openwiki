@@ -1424,10 +1424,10 @@ describe("finishRepositoryRun", () => {
     }
   });
 
-  test("invalidates the whole plan on drift and removes only abandoned new pages", async () => {
+  test("finalizes completed work once without advancing a drifted source", async () => {
     const root = await createRepository(["pre-existing.md"]);
-    const runA = await beginForcedUpdate(root, "Plan A context");
-    await submitRepositoryPlan(runA, {
+    const run = await beginForcedUpdate(root, "Plan A context");
+    await submitRepositoryPlan(run, {
       pages: [
         {
           path: "/openwiki/new-page.md",
@@ -1436,127 +1436,64 @@ describe("finishRepositoryRun", () => {
         },
       ],
     });
-    await runA.backend.write("/openwiki/new-page.md", validPage("New Page"));
+    await completeCurrentPage(run, "New Page");
     await writeFile(
       path.join(root, "README.md"),
       "# Repository\nSource changed.\n",
       "utf8",
     );
 
-    await expect(finishRepositoryRun(runA)).rejects.toMatchObject({
-      code: "conflict",
+    await expect(finishRepositoryRun(run)).resolves.toEqual({
+      status: "complete",
+      sourceChanged: true,
     });
-    expect(runA.state.phase).toBe("planning");
-    expect(runA.state.plan).toBeUndefined();
-    expect((await readRepositoryRunState(root))?.plan).toBeUndefined();
-
-    const resumedResult = await beginRepositoryRun({
-      root,
-      mode: "update",
-      planningContext: "Plan B context",
-      actor: ACTOR,
-    });
-    const runB = requireActiveRun(resumedResult);
-    expect(runB.state.runId).toBe(runA.state.runId);
-    expect(runB.state.planningContext).toBe("Plan B context");
-    await submitRepositoryPlan(runB, { pages: [] });
-    await finishRepositoryRun(runB);
+    expect(await readRepositoryRunState(root)).toBeNull();
 
     await expect(
       readFile(path.join(root, "openwiki", "new-page.md"), "utf8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    ).resolves.toContain("# New Page");
     await expect(
       readFile(path.join(root, "openwiki", "pre-existing.md"), "utf8"),
     ).resolves.toContain("# pre-existing");
-  });
-
-  test("retains completed page coverage while replanning after source drift", async () => {
-    const root = await createRepository(["second.md"]);
-    const baselineHead = await git(root, ["rev-parse", "HEAD"]);
-    await writeFile(
-      path.join(root, "README.md"),
-      "# Repository at H1\n",
-      "utf8",
-    );
-    await git(root, ["add", "README.md"]);
-    await git(root, ["commit", "--quiet", "-m", "source at H1"]);
-    const completedHead = await git(root, ["rev-parse", "HEAD"]);
-    const run = await beginForcedUpdate(root);
-    await submitRepositoryPlan(run, {
-      pages: [
-        {
-          path: "/openwiki/second.md",
-          title: "Second",
-          purpose: "Refresh the secondary guide.",
-        },
-        {
-          path: "/openwiki/quickstart.md",
-          title: "Quickstart",
-          purpose: "Refresh the entry point.",
-        },
-      ],
+    await expect(
+      readFile(path.join(root, "openwiki", ".last-update.json"), "utf8").then(
+        JSON.parse,
+      ),
+    ).resolves.toMatchObject({
+      gitHead: run.state.baseGitHead,
+      status: "interrupted",
     });
-    await completeCurrentPage(run, "Second");
-    await writeFile(
-      path.join(root, "README.md"),
-      "# Repository drifted after page completion\n",
-      "utf8",
-    );
-
-    await expect(finishRepositoryRun(run)).rejects.toMatchObject({
-      code: "conflict",
-    });
-    const resumedResult = await beginRepositoryRun({
-      root,
-      mode: "update",
-      actor: ACTOR,
-    });
-    const resumed = requireActiveRun(resumedResult);
     const manifest = await readRepositoryPageManifest(root);
-
-    expect(resumed.state.plan).toBeUndefined();
-    expect(manifest.pages["/openwiki/second.md"]?.gitHead).toBe(completedHead);
-    expect(manifest.pages["/openwiki/quickstart.md"]?.gitHead).toBe(
-      baselineHead,
-    );
-    if (resumedResult.view.status !== "active") {
-      throw new Error("Expected active replanning view.");
-    }
     expect(
-      resumedResult.view.pageUpdateWindows.find(
-        ({ baseGitHead }) => baseGitHead === completedHead,
+      Object.values(manifest.pages).every(
+        (entry) =>
+          entry.gitHead === run.state.targetGitHead &&
+          entry.sourceFingerprint === run.state.sourceFingerprint,
       ),
-    ).toMatchObject({ pages: ["/openwiki/second.md"] });
-    expect(
-      resumedResult.view.pageUpdateWindows.find(
-        ({ baseGitHead }) => baseGitHead === baselineHead,
-      ),
-    ).toMatchObject({ pages: ["/openwiki/quickstart.md"] });
+    ).toBe(true);
   });
 
-  test("does not mutate active state when durable drift invalidation fails", async () => {
+  test("keeps finalized work resumable when drift metadata persistence fails", async () => {
     const root = await createRepository();
     const run = await beginForcedUpdate(root);
     await submitRepositoryPlan(run, { pages: [] });
-    const originalState = run.state;
     await writeFile(
       path.join(root, "README.md"),
       "# Repository\nSource changed.\n",
       "utf8",
     );
-    failureHarness.stateWrites = 1;
+    failureHarness.metadataWrites = 1;
 
     await expect(finishRepositoryRun(run)).rejects.toThrow(
-      "injected run-state write failure",
+      "injected metadata failure",
     );
-    expect(run.state).toBe(originalState);
     expect((await readRepositoryRunState(root))?.plan).toBeDefined();
 
-    await expect(finishRepositoryRun(run)).rejects.toMatchObject({
-      code: "conflict",
+    await expect(finishRepositoryRun(run)).resolves.toEqual({
+      status: "complete",
+      sourceChanged: true,
     });
-    expect(run.state.phase).toBe("planning");
-    expect(run.state.plan).toBeUndefined();
+    expect(await readRepositoryRunState(root)).toBeNull();
   });
 
   test("rechecks source after deterministic finalization before completion", async () => {
@@ -1573,19 +1510,53 @@ describe("finishRepositoryRun", () => {
       );
     });
 
-    await expect(finishRepositoryRun(run)).rejects.toMatchObject({
-      code: "conflict",
+    await expect(finishRepositoryRun(run)).resolves.toEqual({
+      status: "complete",
+      sourceChanged: true,
     });
-    expect(run.state.phase).toBe("planning");
-    expect(run.state.plan).toBeUndefined();
-    await expect(readRepositoryRunState(root)).resolves.toMatchObject({
-      phase: "planning",
-    });
+    expect(await readRepositoryRunState(root)).toBeNull();
     await expect(
       readFile(path.join(root, "openwiki", ".last-update.json"), "utf8").then(
         JSON.parse,
       ),
-    ).resolves.toMatchObject({ status: "interrupted" });
+    ).resolves.toMatchObject({
+      gitHead: run.state.baseGitHead,
+      status: "interrupted",
+    });
+  });
+
+  test("omits the checkpoint when a drifted init has no successful baseline", async () => {
+    const root = await createRepository();
+    await rm(path.join(root, "openwiki", ".last-update.json"));
+    const run = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "init", actor: ACTOR }),
+    );
+    await submitRepositoryPlan(run, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Document the repository entry point.",
+        },
+      ],
+    });
+    await completeCurrentPage(run, "Quickstart");
+    await writeFile(
+      path.join(root, "README.md"),
+      "# Repository\nSource changed during init.\n",
+      "utf8",
+    );
+
+    await expect(finishRepositoryRun(run)).resolves.toEqual({
+      status: "complete",
+      sourceChanged: true,
+    });
+
+    const metadata = JSON.parse(
+      await readFile(path.join(root, "openwiki", ".last-update.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(metadata).toMatchObject({ status: "interrupted" });
+    expect(metadata).not.toHaveProperty("gitHead");
   });
 
   test("applies explicit existing-page deletions with Claims cleanup", async () => {
@@ -1655,21 +1626,18 @@ describe("finishRepositoryRun", () => {
     ).resolves.toMatchObject({ status: "interrupted" });
   });
 
-  test("invalidates completion when source changes during manifest replacement", async () => {
+  test("records drift when source changes during manifest replacement", async () => {
     const root = await createRepository();
     const run = await beginForcedUpdate(root);
     await submitRepositoryPlan(run, { pages: [] });
     failureHarness.sourceMutationsAfterManifestReplacement = 1;
 
-    await expect(finishRepositoryRun(run)).rejects.toMatchObject({
-      code: "conflict",
+    await expect(finishRepositoryRun(run)).resolves.toEqual({
+      status: "complete",
+      sourceChanged: true,
     });
 
-    expect(run.state.phase).toBe("planning");
-    expect(run.state.plan).toBeUndefined();
-    await expect(readRepositoryRunState(root)).resolves.toMatchObject({
-      phase: "planning",
-    });
+    await expect(readRepositoryRunState(root)).resolves.toBeNull();
     await expect(
       readFile(path.join(root, "openwiki", ".last-update.json"), "utf8").then(
         JSON.parse,
