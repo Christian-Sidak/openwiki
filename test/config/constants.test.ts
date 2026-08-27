@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   BASETEN_BASE_URL_ENV_KEY,
+  BEDROCK_DEFAULT_MAX_TOKENS,
   DEFAULT_MODEL_ID,
   DEFAULT_PROVIDER_RETRY_ATTEMPTS,
   DEFAULT_PROVIDER,
@@ -28,6 +29,7 @@ import {
   providerRequiresRegion,
   providerRequiresSecretKey,
   providerUsesAwsSdkCredentials,
+  resolveBedrockMaxTokens,
   resolveConfiguredProvider,
   resolveOpenRouterMaxTokens,
   resolveOpenRouterProviderOnly,
@@ -331,6 +333,30 @@ describe("resolveOpenRouterMaxTokens", () => {
       expect(() =>
         resolveOpenRouterMaxTokens({ OPENWIKI_OPENROUTER_MAX_TOKENS: value }),
       ).toThrow(/OPENWIKI_OPENROUTER_MAX_TOKENS/u);
+    }
+  });
+});
+
+describe("resolveBedrockMaxTokens", () => {
+  test("returns the default ceiling (16000) when env var is unset", () => {
+    expect(resolveBedrockMaxTokens({})).toBe(BEDROCK_DEFAULT_MAX_TOKENS);
+    expect(resolveBedrockMaxTokens({})).toBe(16000);
+  });
+
+  test("parses a valid positive integer override", () => {
+    expect(
+      resolveBedrockMaxTokens({ OPENWIKI_BEDROCK_MAX_TOKENS: "8192" }),
+    ).toBe(8192);
+    expect(
+      resolveBedrockMaxTokens({ OPENWIKI_BEDROCK_MAX_TOKENS: " 4096 " }),
+    ).toBe(4096);
+  });
+
+  test("rejects zero, negative, fractional, and non-numeric values", () => {
+    for (const value of ["0", "-1", "1.5", "abc", "", "  ", "1e3", "0x10"]) {
+      expect(() =>
+        resolveBedrockMaxTokens({ OPENWIKI_BEDROCK_MAX_TOKENS: value }),
+      ).toThrow(/OPENWIKI_BEDROCK_MAX_TOKENS/u);
     }
   });
 });

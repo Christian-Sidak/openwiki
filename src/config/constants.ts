@@ -29,6 +29,8 @@ export const OPENWIKI_OPENROUTER_PROVIDER_ONLY_ENV_KEY =
   "OPENWIKI_OPENROUTER_PROVIDER_ONLY";
 export const OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY =
   "OPENWIKI_OPENROUTER_MAX_TOKENS";
+export const OPENWIKI_BEDROCK_MAX_TOKENS_ENV_KEY = "OPENWIKI_BEDROCK_MAX_TOKENS";
+export const BEDROCK_DEFAULT_MAX_TOKENS = 16000;
 export const BEDROCK_AWS_ACCESS_KEY_ID_ENV_KEY = "BEDROCK_AWS_ACCESS_KEY_ID";
 export const BEDROCK_AWS_SECRET_ACCESS_KEY_ENV_KEY =
   "BEDROCK_AWS_SECRET_ACCESS_KEY";
@@ -937,6 +939,39 @@ export function resolveOpenRouterMaxTokens(
   if (!Number.isSafeInteger(parsedMaxTokens)) {
     throw new Error(
       `Invalid ${OPENWIKI_OPENROUTER_MAX_TOKENS_ENV_KEY}. Expected a positive integer.`,
+    );
+  }
+
+  return parsedMaxTokens;
+}
+
+// Sets the per-request output-token ceiling for the Bedrock Converse API.
+// Without an explicit maxTokens, Bedrock caps output at 4096 tokens by
+// default, which truncates long wiki pages mid-write. The default of 16000
+// matches @langchain/anthropic's built-in ceiling for Claude models.
+// Override via OPENWIKI_BEDROCK_MAX_TOKENS for models with a lower ceiling.
+export function resolveBedrockMaxTokens(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const rawMaxTokens = env[OPENWIKI_BEDROCK_MAX_TOKENS_ENV_KEY];
+
+  if (rawMaxTokens === undefined) {
+    return BEDROCK_DEFAULT_MAX_TOKENS;
+  }
+
+  const maxTokens = rawMaxTokens.trim();
+
+  if (!/^[1-9]\d*$/u.test(maxTokens)) {
+    throw new Error(
+      `Invalid ${OPENWIKI_BEDROCK_MAX_TOKENS_ENV_KEY}. Expected a positive integer.`,
+    );
+  }
+
+  const parsedMaxTokens = Number(maxTokens);
+
+  if (!Number.isSafeInteger(parsedMaxTokens)) {
+    throw new Error(
+      `Invalid ${OPENWIKI_BEDROCK_MAX_TOKENS_ENV_KEY}. Expected a positive integer.`,
     );
   }
 

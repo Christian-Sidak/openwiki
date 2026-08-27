@@ -116,6 +116,7 @@ import {
   providerUsesExternalCliAuth,
   providerUsesResponsesApi,
   resolveConfiguredProvider,
+  resolveBedrockMaxTokens,
   resolveOpenRouterMaxTokens,
   resolveOpenRouterProviderOnly,
   resolveProviderBaseUrl,
@@ -1142,6 +1143,7 @@ export function createModel(
     return new ChatBedrockConverse({
       model: modelId,
       region: resolveProviderRegion(provider),
+      maxTokens: resolveBedrockMaxTokens(),
       ...retryOptions,
     });
   }

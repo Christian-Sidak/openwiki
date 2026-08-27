@@ -22,6 +22,7 @@ const ENV_KEYS = [
   "BEDROCK_AWS_ACCESS_KEY_ID",
   "BEDROCK_AWS_REGION",
   "BEDROCK_AWS_SECRET_ACCESS_KEY",
+  "OPENWIKI_BEDROCK_MAX_TOKENS",
 ] as const;
 
 const originalEnv = new Map(
@@ -74,5 +75,33 @@ describe("createModel Bedrock credentials", () => {
       region: "us-west-2",
     });
     expect(bedrockConstructorArgs[0]).not.toHaveProperty("credentials");
+  });
+});
+
+describe("createModel Bedrock output-token ceiling", () => {
+  test("sets maxTokens to 16000 by default", () => {
+    process.env.AWS_REGION = "us-east-1";
+
+    createModel("bedrock", "us.anthropic.claude-sonnet-5", 0);
+
+    expect(bedrockConstructorArgs[0]).toMatchObject({ maxTokens: 16000 });
+  });
+
+  test("passes a custom ceiling from OPENWIKI_BEDROCK_MAX_TOKENS", () => {
+    process.env.AWS_REGION = "us-east-1";
+    process.env.OPENWIKI_BEDROCK_MAX_TOKENS = "8192";
+
+    createModel("bedrock", "us.anthropic.claude-sonnet-5", 0);
+
+    expect(bedrockConstructorArgs[0]).toMatchObject({ maxTokens: 8192 });
+  });
+
+  test("rejects an invalid OPENWIKI_BEDROCK_MAX_TOKENS value with a clear error", () => {
+    process.env.AWS_REGION = "us-east-1";
+    process.env.OPENWIKI_BEDROCK_MAX_TOKENS = "lots";
+
+    expect(() =>
+      createModel("bedrock", "us.anthropic.claude-sonnet-5", 0),
+    ).toThrow(/OPENWIKI_BEDROCK_MAX_TOKENS/u);
   });
 });
