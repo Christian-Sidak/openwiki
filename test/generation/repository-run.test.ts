@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -126,6 +127,10 @@ const execFileAsync = promisify(execFile);
 const ACTOR = {
   producerActor: "host-agent/test",
   metadataModel: "test-model",
+};
+const OTHER_ACTOR = {
+  producerActor: "host-agent/other",
+  metadataModel: "other-model",
 };
 const STARTED_AT = "2026-08-24T12:00:00.000Z";
 const temporaryDirectories: string[] = [];
@@ -580,7 +585,7 @@ describe("beginRepositoryRun", () => {
     ]);
   });
 
-  test("resumes the same owner while rejecting mode, language, and producer conflicts", async () => {
+  test("resumes across producers while rejecting mode and language conflicts", async () => {
     const root = await createRepository();
     const initial = await beginForcedUpdate(root, "Original context");
     expect(initial.state.targetGitHead).toBe(
@@ -598,13 +603,15 @@ describe("beginRepositoryRun", () => {
         actor: ACTOR,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
-    await expect(
-      beginRepositoryRun({
+    const otherProducer = requireActiveRun(
+      await beginRepositoryRun({
         root,
         mode: "update",
-        actor: { ...ACTOR, producerActor: "host-agent/other" },
+        actor: OTHER_ACTOR,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    );
+    expect(otherProducer.state.runId).toBe(initial.state.runId);
+    expect(otherProducer.state.actor).toEqual(OTHER_ACTOR);
 
     const resumedResult = await beginRepositoryRun({
       root,
@@ -619,7 +626,50 @@ describe("beginRepositoryRun", () => {
       runId: initial.state.runId,
     });
     expect(resumed.state.actor.metadataModel).toBe("replacement-model");
+    expect(resumed.state.actor.producerActor).toBe(ACTOR.producerActor);
     expect(resumed.state.planningContext).toBe("Replacement context");
+  });
+
+  test("attributes legacy completed work to its original run producer", async () => {
+    const root = await createRepository();
+    const initial = await beginForcedUpdate(root);
+    await submitRepositoryPlan(initial, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the repository entry point.",
+        },
+      ],
+    });
+    await completeCurrentPage(initial, "Quickstart Updated");
+
+    const legacyState = await readRepositoryRunState(root);
+    if (!legacyState?.plan?.pages[0]) throw new Error("Expected run state.");
+    delete legacyState.plan.pages[0].completedBy;
+    await writeFile(
+      repositoryRunStatePath(root),
+      `${JSON.stringify(legacyState, null, 2)}\n`,
+      "utf8",
+    );
+    const legacyManifest = await readRepositoryPageManifest(root);
+    delete legacyManifest.pages["/openwiki/quickstart.md"]?.completedBy;
+    delete legacyManifest.pages["/openwiki/quickstart.md"]?.completedRunId;
+    await writeRepositoryPageManifest(root, legacyManifest);
+
+    const resumed = requireActiveRun(
+      await beginRepositoryRun({
+        root,
+        mode: "update",
+        actor: OTHER_ACTOR,
+      }),
+    );
+    expect(resumed.state.plan?.pages[0]?.completedBy).toBe(ACTOR.producerActor);
+    await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
+      pages: {
+        "/openwiki/quickstart.md": { completedBy: ACTOR.producerActor },
+      },
+    });
   });
 
   test("backfills a legacy target HEAD and replaces it with paired drift state", async () => {
@@ -1058,6 +1108,8 @@ describe("repository page queue", () => {
     await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
       pages: {
         "/openwiki/quickstart.md": {
+          completedBy: ACTOR.producerActor,
+          completedRunId: run.state.runId,
           sourceFingerprint: run.state.sourceFingerprint,
           gitHead: run.state.targetGitHead,
         },
@@ -1152,9 +1204,11 @@ describe("repository page queue", () => {
     });
 
     const resumed = requireActiveRun(
-      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+      await beginRepositoryRun({ root, mode: "update", actor: OTHER_ACTOR }),
     );
     expect(resumed.state.plan?.pages[0]?.status).toBe("complete");
+    expect(resumed.state.plan?.pages[0]?.completedBy).toBe(ACTOR.producerActor);
+    expect(resumed.state.actor).toEqual(OTHER_ACTOR);
     expect((await readRepositoryRunState(root))?.plan?.pages[0]?.status).toBe(
       "complete",
     );
@@ -1190,6 +1244,42 @@ describe("repository page queue", () => {
     );
 
     expect(resumed.state.plan?.pages[0]?.status).toBe("pending");
+  });
+
+  test("does not promote a pending job from another run's current coverage", async () => {
+    const root = await createRepository();
+    const run = await beginForcedUpdate(root);
+    await submitRepositoryPlan(run, {
+      pages: [
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the entry point.",
+        },
+      ],
+    });
+    const manifest = await readRepositoryPageManifest(root);
+    const page = manifest.pages["/openwiki/quickstart.md"];
+    if (!page) throw new Error("Expected current page coverage.");
+    manifest.pages["/openwiki/quickstart.md"] = {
+      ...page,
+      sourceFingerprint: run.state.sourceFingerprint,
+      ...(run.state.targetGitHead
+        ? { gitHead: run.state.targetGitHead }
+        : {}),
+      completedBy: OTHER_ACTOR.producerActor,
+      completedRunId: randomUUID(),
+    };
+    await writeRepositoryPageManifest(root, manifest);
+
+    const resumed = requireActiveRun(
+      await beginRepositoryRun({ root, mode: "update", actor: ACTOR }),
+    );
+
+    expect(resumed.state.plan?.pages[0]).toMatchObject({
+      status: "pending",
+    });
+    expect(resumed.state.plan?.pages[0]).not.toHaveProperty("completedBy");
   });
 
   test("rejects a completed job whose Markdown lost its durable proof", async () => {
@@ -1257,6 +1347,60 @@ describe("repository page queue", () => {
 });
 
 describe("finishRepositoryRun", () => {
+  test("preserves per-page provenance across producer handoffs", async () => {
+    const root = await createRepository(["second.md"]);
+    const first = await beginForcedUpdate(root);
+    await submitRepositoryPlan(first, {
+      pages: [
+        {
+          path: "/openwiki/second.md",
+          title: "Second",
+          purpose: "Refresh the secondary guide.",
+        },
+        {
+          path: "/openwiki/quickstart.md",
+          title: "Quickstart",
+          purpose: "Refresh the repository entry point.",
+        },
+      ],
+    });
+    await completeCurrentPage(first, "Second");
+
+    const second = requireActiveRun(
+      await beginRepositoryRun({
+        root,
+        mode: "update",
+        actor: OTHER_ACTOR,
+      }),
+    );
+    expect(second.state.plan?.pages[0]).toMatchObject({
+      path: "/openwiki/second.md",
+      status: "complete",
+      completedBy: ACTOR.producerActor,
+    });
+    await completeCurrentPage(second, "Quickstart Updated");
+    await finishRepositoryRun(second);
+
+    const secondPage = parseFrontmatterFields(
+      await readFile(path.join(root, "openwiki", "second.md"), "utf8"),
+    );
+    const quickstart = parseFrontmatterFields(
+      await readFile(path.join(root, "openwiki", "quickstart.md"), "utf8"),
+    );
+    expect(secondPage?.generated).toMatchObject({ by: ACTOR.producerActor });
+    expect(quickstart?.generated).toMatchObject({
+      by: OTHER_ACTOR.producerActor,
+    });
+    await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
+      pages: {
+        "/openwiki/second.md": { completedBy: ACTOR.producerActor },
+        "/openwiki/quickstart.md": {
+          completedBy: OTHER_ACTOR.producerActor,
+        },
+      },
+    });
+  });
+
   test("completes init with canonical bytes and final Claims durable", async () => {
     const root = await createRepository(["old.md"]);
     const result = await beginRepositoryRun({

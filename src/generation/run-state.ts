@@ -34,11 +34,11 @@ export type RepositoryRunPhase = "planning" | "generating";
 export type PageJobStatus = "pending" | "skipped" | "complete";
 
 /**
- * Stable producer and metadata identities retained across resume.
+ * Current producer and metadata identities for repository generation.
  */
 export interface RepositoryRunActor {
   /**
-   * Provenance actor that cannot change while a run is resumable.
+   * Provenance actor used for page work performed by the current session.
    */
   producerActor: string;
 
@@ -91,6 +91,13 @@ export interface PageJob {
    * Durable completion state for this queue entry.
    */
   status: PageJobStatus;
+
+  /**
+   * Producer that durably completed this page.
+   *
+   * @default undefined for pending/skipped jobs and legacy completed state.
+   */
+  completedBy?: string;
 }
 
 /**
@@ -175,7 +182,7 @@ export interface RepositoryRunState {
   planningContext?: string;
 
   /**
-   * Stable producer and metadata identities retained across resume.
+   * Current producer and metadata identities, refreshed on resume.
    */
   actor: RepositoryRunActor;
 
@@ -251,6 +258,7 @@ const PageJobSchema = z
     relatedPages: z.array(z.string()),
     instructions: z.array(z.string().trim().min(1)),
     status: z.enum(["pending", "skipped", "complete"]),
+    completedBy: z.string().trim().min(1).optional(),
   })
   .strict();
 

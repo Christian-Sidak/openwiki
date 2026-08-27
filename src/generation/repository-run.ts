@@ -45,7 +45,7 @@ import {
 import { isFileNotFoundError } from "../platform/fs-errors.js";
 import { RepositoryRunError } from "./errors.js";
 import {
-  isRepositoryPageCompletionCurrent,
+  getCurrentRepositoryPageCompletion,
   readRepositoryPageManifest,
   recordRepositoryPageCompletion,
   replaceRepositoryPageManifest,
@@ -98,7 +98,7 @@ export interface BeginRepositoryRunInput {
   planningContext?: string;
 
   /**
-   * Stable producer and metadata identities for the run.
+   * Producer and metadata identities for the current session.
    */
   actor: RepositoryRunActor;
 
@@ -548,13 +548,6 @@ async function resumeRepositoryRun(
     );
   }
 
-  if (state.actor.producerActor !== input.actor.producerActor) {
-    throw new RepositoryRunError(
-      "conflict",
-      `Interrupted OpenWiki run is owned by producer ${state.actor.producerActor}; refusing to resume it as ${input.actor.producerActor}.`,
-    );
-  }
-
   const ignore = await OpenWikiIgnore.load(input.root);
   const currentSource = await createRepositorySourceSnapshot(
     input.root,
@@ -565,10 +558,7 @@ async function resumeRepositoryRun(
     state.plan?.pages.some(({ status }) => status === "skipped") ?? false;
   let nextState: RepositoryRunState = {
     ...state,
-    actor: {
-      ...state.actor,
-      metadataModel: input.actor.metadataModel,
-    },
+    actor: { ...input.actor },
     ...(state.plan && resetSkippedPages
       ? {
           plan: {
@@ -595,7 +585,11 @@ async function resumeRepositoryRun(
     if (!nextState.targetGitHead && currentSource.gitHead) {
       nextState.targetGitHead = currentSource.gitHead;
     }
-    nextState = await reconcileManifestPageJobs(input.root, nextState);
+    nextState = await reconcileManifestPageJobs(
+      input.root,
+      nextState,
+      state.actor.producerActor,
+    );
   }
   // A finish-time drift check already stores the replacement fingerprint, so
   // the next begin may see sourceChanged=false. Plan absence is the durable
@@ -639,19 +633,21 @@ async function resumeRepositoryRun(
  *
  * @param root - Absolute repository root.
  * @param state - Durable run state for the unchanged active source.
+ * @param legacyCompletedBy - Producer used for legacy completed jobs.
  * @returns State with manifest-proven pending jobs promoted to complete.
  * @throws RepositoryRunError when a completed job cannot re-prove durable state.
  */
 async function reconcileManifestPageJobs(
   root: string,
   state: RepositoryRunState,
+  legacyCompletedBy: string,
 ): Promise<RepositoryRunState> {
   if (!state.plan) return state;
   const source = getRepositoryRunSourceCheckpoint(state);
   let changed = false;
   const pages: PageJob[] = [];
   for (const page of state.plan.pages) {
-    const current = await isRepositoryPageCompletionCurrent(
+    let current = await getCurrentRepositoryPageCompletion(
       root,
       page.path,
       source,
@@ -661,10 +657,42 @@ async function reconcileManifestPageJobs(
       // a later failure leaves `.run.json` in place. Re-prove those exact bytes
       // instead of rejecting a safely resumable finish. Unpaired edits still
       // fail closed inside recordRepositoryPageCompletion.
-      await recordRepositoryPageCompletion(root, page.path, source);
+      current = await recordRepositoryPageCompletion(
+        root,
+        page.path,
+        source,
+        page.completedBy ?? legacyCompletedBy,
+        state.runId,
+      );
     }
-    if (page.status === "pending" && current) {
-      pages.push({ ...page, status: "complete" as const });
+    if (
+      page.status === "complete" &&
+      current &&
+      (!current.completedBy || current.completedRunId !== state.runId)
+    ) {
+      current = await recordRepositoryPageCompletion(
+        root,
+        page.path,
+        source,
+        page.completedBy ?? legacyCompletedBy,
+        state.runId,
+      );
+    }
+    if (
+      page.status === "pending" &&
+      current?.completedRunId === state.runId
+    ) {
+      pages.push({
+        ...page,
+        status: "complete" as const,
+        completedBy: current.completedBy ?? legacyCompletedBy,
+      });
+      changed = true;
+    } else if (page.status === "complete" && !page.completedBy) {
+      pages.push({
+        ...page,
+        completedBy: current?.completedBy ?? legacyCompletedBy,
+      });
       changed = true;
     } else {
       pages.push(page);
@@ -1144,12 +1172,20 @@ export async function submitRepositoryPage(
     run.root,
     current.path,
     getRepositoryRunSourceCheckpoint(run.state),
+    run.state.actor.producerActor,
+    run.state.runId,
   );
 
   const nextPlan = {
     ...plan,
     pages: plan.pages.map((page) =>
-      page.id === current.id ? { ...page, status: "complete" as const } : page,
+      page.id === current.id
+        ? {
+            ...page,
+            status: "complete" as const,
+            completedBy: run.state.actor.producerActor,
+          }
+        : page,
     ),
   };
   const nextState: RepositoryRunState = {
@@ -1389,6 +1425,14 @@ export async function finishRepositoryRun(
   }
   const skippedPages = new Set(skippedJobs.map(({ path }) => path));
   const sourceChangedBeforeFinish = await hasRepositorySourceChanged(run);
+  const producerActorsByPage = new Map<string, string>();
+  for (const [page, entry] of Object.entries(
+    (await readRepositoryPageManifest(run.root)).pages,
+  )) {
+    if (entry.completedBy && entry.completedRunId === run.state.runId) {
+      producerActorsByPage.set(page, entry.completedBy);
+    }
+  }
 
   await applyAbandonedGeneratedPageDeletions(run, plan);
   await applyPlannedDeletions(run, plan.deletePages);
@@ -1402,6 +1446,7 @@ export async function finishRepositoryRun(
     prepared: deserializePreparedWikiState(run.state.preparedWiki),
     at: run.state.startedAt,
     producerActor: run.state.actor.producerActor,
+    producerActorsByPage,
     claimSources: run.claimsRuntime.session.getEvidenceResourcesByPage(),
   });
 

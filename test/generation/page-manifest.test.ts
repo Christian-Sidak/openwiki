@@ -325,7 +325,11 @@ describe("repository page completion", () => {
       gitHead: GIT_HEAD,
       sourceFingerprint: SOURCE_FINGERPRINT,
     };
-    await recordRepositoryPageCompletion(root, page, source);
+    await recordRepositoryPageCompletion(root, page, source, "host/codex");
+
+    await expect(readRepositoryPageManifest(root)).resolves.toMatchObject({
+      pages: { [page]: { completedBy: "host/codex" } },
+    });
 
     await expect(
       isRepositoryPageCompletionCurrent(root, page, source),

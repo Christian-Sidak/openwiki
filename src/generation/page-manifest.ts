@@ -37,6 +37,20 @@ export interface RepositoryPageManifestEntry extends RepositorySourceCheckpoint 
    * Hash of the exact Markdown bytes whose Claims were verified.
    */
   pageVersion: string;
+
+  /**
+   * Producer that authored the durably verified page body.
+   *
+   * @default undefined for coverage migrated from legacy metadata.
+   */
+  completedBy?: string;
+
+  /**
+   * Durable run that recorded `completedBy` for this page.
+   *
+   * @default undefined for coverage created before per-page provenance.
+   */
+  completedRunId?: string;
 }
 
 /**
@@ -61,6 +75,8 @@ const ManifestEntrySchema = z
     gitHead: z.string().min(1).optional(),
     sourceFingerprint: SourceFingerprintSchema.optional(),
     pageVersion: PageVersionSchema,
+    completedBy: z.string().trim().min(1).optional(),
+    completedRunId: z.string().uuid().optional(),
   })
   .strict();
 const ManifestSchema = z
@@ -162,6 +178,8 @@ export async function writeRepositoryPageManifest(
  * @param root - Absolute repository root that owns the generated wiki.
  * @param page - Canonical factual page path.
  * @param source - Exact repository source checkpoint verified by the page.
+ * @param completedBy - Producer that authored the completed page.
+ * @param completedRunId - Durable run that completed the page.
  * @returns The durable manifest entry written for the page.
  * @throws RepositoryRunError when the page and Claims sidecar disagree.
  */
@@ -169,9 +187,17 @@ export async function recordRepositoryPageCompletion(
   root: string,
   page: string,
   source: RepositorySourceCheckpoint,
+  completedBy?: string,
+  completedRunId?: string,
 ): Promise<RepositoryPageManifestEntry> {
   const canonicalPage = normalizeWikiPagePath(page);
-  const entry = await buildManifestEntry(root, canonicalPage, source);
+  const entry = await buildManifestEntry(
+    root,
+    canonicalPage,
+    source,
+    completedBy,
+    completedRunId,
+  );
   const manifest = await readRepositoryPageManifest(root);
   manifest.pages[canonicalPage] = entry;
   await writeRepositoryPageManifest(root, manifest);
@@ -228,12 +254,11 @@ export async function replaceRepositoryPageManifest(
   preservePages: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   const next = createEmptyRepositoryPageManifest();
-  const previous =
-    preservePages.size > 0 ? await readRepositoryPageManifest(root) : null;
+  const previous = await readRepositoryPageManifest(root);
   for (const page of pages) {
     const canonicalPage = normalizeWikiPagePath(page);
     if (preservePages.has(canonicalPage)) {
-      const previousEntry = previous?.pages[canonicalPage];
+      const previousEntry = previous.pages[canonicalPage];
       if (previousEntry) next.pages[canonicalPage] = previousEntry;
       continue;
     }
@@ -241,6 +266,8 @@ export async function replaceRepositoryPageManifest(
       root,
       canonicalPage,
       source,
+      previous.pages[canonicalPage]?.completedBy,
+      previous.pages[canonicalPage]?.completedRunId,
     );
   }
   await writeRepositoryPageManifest(root, next);
@@ -262,26 +289,44 @@ export async function isRepositoryPageCompletionCurrent(
   page: string,
   source: RepositorySourceCheckpoint,
 ): Promise<boolean> {
-  if (!source.sourceFingerprint) return false;
+  return (
+    (await getCurrentRepositoryPageCompletion(root, page, source)) !== null
+  );
+}
+
+/**
+ * Returns current durable completion coverage for one page.
+ *
+ * @param root - Absolute repository root.
+ * @param page - Canonical factual page path.
+ * @param source - Exact active-run source checkpoint.
+ * @returns Matching verified manifest entry, or `null` when coverage is stale.
+ */
+export async function getCurrentRepositoryPageCompletion(
+  root: string,
+  page: string,
+  source: RepositorySourceCheckpoint,
+): Promise<RepositoryPageManifestEntry | null> {
+  if (!source.sourceFingerprint) return null;
 
   const canonicalPage = normalizeWikiPagePath(page);
   const entry = (await readRepositoryPageManifest(root)).pages[canonicalPage];
   if (!entry || entry.sourceFingerprint !== source.sourceFingerprint) {
-    return false;
+    return null;
   }
   if (source.gitHead !== undefined && entry.gitHead !== source.gitHead) {
-    return false;
+    return null;
   }
   try {
     const store = new ClaimsStore(root);
     const sidecar = await store.loadPage(canonicalPage);
-    return (
+    const current =
       sidecar?.verification !== undefined &&
       sidecar.pageVersion === entry.pageVersion &&
-      (await store.hashPage(canonicalPage)) === entry.pageVersion
-    );
+      (await store.hashPage(canonicalPage)) === entry.pageVersion;
+    return current ? entry : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -291,6 +336,8 @@ export async function isRepositoryPageCompletionCurrent(
  * @param root - Absolute repository root.
  * @param page - Canonical factual page path.
  * @param source - Source checkpoint covered by the page.
+ * @param completedBy - Producer that authored the completed page.
+ * @param completedRunId - Durable run that completed the page.
  * @returns Valid entry bound to the current Markdown bytes.
  * @throws RepositoryRunError when the page is not durably verified.
  */
@@ -298,6 +345,8 @@ async function buildManifestEntry(
   root: string,
   page: string,
   source: RepositorySourceCheckpoint,
+  completedBy?: string,
+  completedRunId?: string,
 ): Promise<RepositoryPageManifestEntry> {
   const canonicalPage = normalizeWikiPagePath(page);
   const store = new ClaimsStore(root);
@@ -318,6 +367,8 @@ async function buildManifestEntry(
   }
   return {
     pageVersion,
+    ...(completedBy ? { completedBy } : {}),
+    ...(completedRunId ? { completedRunId } : {}),
     ...(source.gitHead ? { gitHead: source.gitHead } : {}),
     ...(source.sourceFingerprint
       ? { sourceFingerprint: source.sourceFingerprint }
