@@ -678,10 +678,7 @@ async function reconcileManifestPageJobs(
         state.runId,
       );
     }
-    if (
-      page.status === "pending" &&
-      current?.completedRunId === state.runId
-    ) {
+    if (page.status === "pending" && current?.completedRunId === state.runId) {
       pages.push({
         ...page,
         status: "complete" as const,

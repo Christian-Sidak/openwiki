@@ -69,6 +69,14 @@ Keep it current automatically by adding a scheduled CI job that opens a docs PR 
 > [!NOTE]
 > On Windows, install with a Node.js package manager (`npm install -g openwiki` or `pnpm add -g openwiki`). Installing with `bun` can fall back to compiling the `better-sqlite3` native dependency, which needs Visual Studio Build Tools with the Desktop development with C++ workload.
 
+## OpenWiki architecture
+
+Repository generation is an ordered queue of independently durable page jobs. `openwiki/.run.json` checkpoints the active run and its progress. A page advances only after its Markdown, Claims, verification, and `openwiki/.page-manifest.json` entry are durable, preserving completed work and page-specific source baselines across interruptions and future runs.
+
+<div align="center">
+  <img alt="OpenWiki resumable generation architecture, from the active page queue through page-level durability and future runs." src="./static/openwiki-architecture.png" width="880">
+</div>
+
 ## Coding-agent integrations
 
 OpenWiki can run inside an existing coding agent instead of launching its own model. The coding agent investigates the repository, plans the wiki, and writes each assigned page sequentially with its native repository tools. OpenWiki provides the durable MCP page-job lifecycle, validates each completion, and deterministically finalizes Claims, indexes, provenance, setup files, and metadata.

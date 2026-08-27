@@ -1264,9 +1264,7 @@ describe("repository page queue", () => {
     manifest.pages["/openwiki/quickstart.md"] = {
       ...page,
       sourceFingerprint: run.state.sourceFingerprint,
-      ...(run.state.targetGitHead
-        ? { gitHead: run.state.targetGitHead }
-        : {}),
+      ...(run.state.targetGitHead ? { gitHead: run.state.targetGitHead } : {}),
       completedBy: OTHER_ACTOR.producerActor,
       completedRunId: randomUUID(),
     };
