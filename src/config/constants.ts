@@ -481,6 +481,17 @@ export function providerUsesStreaming(provider: OpenWikiProvider): boolean {
     return resolveOpenAiCompatibleStreaming();
   }
 
+  // The Copilot API serves non-GPT-5 models (Claude, Gemini) over the chat
+  // completions transport. Like the Codex backend for openai-chatgpt, it
+  // rejects or returns empty responses for non-streaming requests, which
+  // causes repository workers to exit without calling submit_plan/submit_page.
+  // Force the streaming transport for all Copilot models. For GPT-5 models
+  // that use the Responses API (useResponsesApi: true), streaming: true is
+  // redundant but harmless, matching the openai-chatgpt provider pattern.
+  if (provider === "copilot") {
+    return true;
+  }
+
   return false;
 }
 
