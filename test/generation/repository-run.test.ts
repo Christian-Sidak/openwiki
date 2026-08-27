@@ -878,7 +878,6 @@ describe("beginRepositoryRun", () => {
     );
     await git(root, ["add", "README.md"]);
     await git(root, ["commit", "--quiet", "-m", "change source"]);
-    const updateHead = await git(root, ["rev-parse", "HEAD"]);
 
     const partialResult = await beginRepositoryRun({
       root,
@@ -915,6 +914,7 @@ describe("beginRepositoryRun", () => {
     await rm(repositoryRunStatePath(root));
     await git(root, ["add", "openwiki"]);
     await git(root, ["commit", "--quiet", "-m", "merge partial progress"]);
+    const partialMergeHead = await git(root, ["rev-parse", "HEAD"]);
 
     const freshRoot = await mkdtemp(
       path.join(tmpdir(), "openwiki-partial-checkout-"),
@@ -934,8 +934,8 @@ describe("beginRepositoryRun", () => {
       freshResult.view.status === "active"
         ? freshResult.view.pageUpdateWindows
         : [];
-    const completedWindow = windows.find(
-      ({ baseGitHead }) => baseGitHead === updateHead,
+    const currentWindow = windows.find(
+      ({ baseGitHead }) => baseGitHead === partialMergeHead,
     );
     const pendingWindow = windows.find(
       ({ baseGitHead }) => baseGitHead === baselineHead,
@@ -947,8 +947,8 @@ describe("beginRepositoryRun", () => {
       changedPaths: ["README.md"],
     });
     expect(freshRun.state.plan).toBeUndefined();
-    expect(completedWindow).toEqual({
-      baseGitHead: updateHead,
+    expect(currentWindow).toEqual({
+      baseGitHead: partialMergeHead,
       pages: ["/openwiki/second.md"],
       changedPaths: [],
       fullReview: false,
@@ -958,6 +958,16 @@ describe("beginRepositoryRun", () => {
       pages: ["/openwiki/quickstart.md"],
       changedPaths: ["README.md"],
       fullReview: false,
+    });
+    await expect(readRepositoryPageManifest(freshRoot)).resolves.toMatchObject({
+      pages: {
+        "/openwiki/second.md": {
+          gitHead: partialMergeHead,
+        },
+        "/openwiki/quickstart.md": {
+          gitHead: baselineHead,
+        },
+      },
     });
   });
 });

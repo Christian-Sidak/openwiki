@@ -364,6 +364,7 @@ export async function beginRepositoryRun(
 
     const claimsStore = new ClaimsStore(input.root);
     const initialPages = await claimsStore.discoverPages();
+    const source = await createRepositorySourceSnapshot(input.root, ignore);
     if (
       input.mode === "update" &&
       context.lastUpdate?.gitHead &&
@@ -373,6 +374,14 @@ export async function beginRepositoryRun(
         input.root,
         initialPages,
         context.lastUpdate.gitHead,
+      );
+    }
+    if (input.mode === "update") {
+      await fastForwardUnchangedRepositoryPageCoverage(
+        input.root,
+        ignore,
+        initialPages,
+        source,
       );
     }
     const seededManifest =
@@ -445,7 +454,6 @@ export async function beginRepositoryRun(
     });
     const requiredRewritePages =
       input.mode === "update" && languageChanged ? initialPages : [];
-    const source = await createRepositorySourceSnapshot(input.root, ignore);
 
     const state: RepositoryRunState = {
       schemaVersion: 1,
@@ -800,6 +808,44 @@ async function getRepositoryPageUpdateWindows(
     });
   }
   return windows;
+}
+
+/**
+ * Advances page coverage across commits that changed only generated wiki files.
+ *
+ * @param root - Absolute repository root.
+ * @param ignore - Active repository read boundary.
+ * @param pages - Factual pages present when the run began.
+ * @param source - Current source checkpoint to fast-forward to.
+ */
+async function fastForwardUnchangedRepositoryPageCoverage(
+  root: string,
+  ignore: OpenWikiIgnore,
+  pages: readonly string[],
+  source: RepositorySourceCheckpoint,
+): Promise<void> {
+  if (!source.gitHead) return;
+
+  const manifest = await readRepositoryPageManifest(root);
+  for (const page of [...pages].sort(compareCodeUnits)) {
+    const entry = manifest.pages[page];
+    if (!entry?.gitHead || entry.gitHead === source.gitHead) continue;
+
+    const changedPaths = await getRepositoryChangedPaths(
+      root,
+      ignore,
+      entry.gitHead,
+    );
+    if (changedPaths.length > 0) continue;
+
+    await recordRepositoryPageCompletion(
+      root,
+      page,
+      source,
+      entry.completedBy,
+      entry.completedRunId,
+    );
+  }
 }
 
 /**
